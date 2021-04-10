@@ -1,0 +1,154 @@
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{grffile}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{textcomp}
+\usepackage{amssymb}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\documentclass{article}
+\usepackage{here}
+\usepackage{xcolor}
+\usepackage[margin=3.0cm]{geometry}
+\usepackage{amsmath}
+\usepackage{parskip}
+\renewcommand\arraystretch{1.4}
+\usepackage[margin=1in]{geometry}
+\usepackage{minted}
+\definecolor{bg}{rgb}{0.95,0.95,0.95}
+\newminted{c}{frame=single}
+\author{Fatih Kaan Salgır - 171044009}
+\date{}
+\title{CSE344 - System Programming - Homework \#1}
+\hypersetup{
+ pdfauthor={Fatih Kaan Salgır - 171044009},
+ pdftitle={CSE344 - System Programming - Homework \#1}}
+\begin{document}
+
+\maketitle
+
+\section{Problem Solution Approach}
+
+I have defined 2 structs (\texttt{criteria} and \texttt{fileInfo}) and constructed by the command line parameters. \texttt{criteria} struct holds the data of whether user wants to filter by the property or not. Similarly \texttt{fileInfo} holds the corresponding data of the parameters.
+
+\begin{ccode}
+struct criteria {
+  bool filename;
+  bool size;
+  bool type;
+  bool permissions;
+  bool noLinks;
+};
+
+struct fileInfo {
+  char *filename;
+  int size;
+  char type;
+  char *permissions;
+  int noLinks;
+};
+\end{ccode}
+
+When desired file has been found, it's path should be printed. Therefore, when it is entered a directory, parent directories need to be saved. In order to keep track of parent directories, double-ended queue data structure has been used. Function of the queue will be as follows:
+\begin{enumerate}
+\item New directories will be added to front of the queue
+\item If file has been found, then it's path will be printed starting from queue's rear, by removing one by one.
+\item If file have not been found after traversing a directory, directory will be removed from queue which is located at the front of the queue.
+\end{enumerate}
+
+\noindent\rule{\textwidth}{0.5pt}
+
+\begin{itemize}
+\item \texttt{getopt()} is used to parse command line arguements.
+\item For symbolic links \texttt{lstat} is used. That means link itself is used to check if matched by search criteria, not the file that it refers to.
+\item \texttt{dirent} pointer returned by \texttt{readdir} is not \texttt{free()}'d, because it is stated on the man page of the \texttt{readdir} that it may be statically allocated.
+\end{itemize}
+
+\subsection{\texttt{SIGINT} Signal}
+To handle \texttt{Control-C} which is \texttt{SIGINT} signal, simple signal handler function implemented. Signal handler sets the global variable \texttt{sigint} to true. Condition of the while loop which searches files, is also dependant to this variable. Therefore in case of \texttt{SIGINT}, searching stops, resources returned to system and error message is printed.
+
+\subsection{Error Handling}
+
+\begin{itemize}
+\item In case of any errors while getting the file stats (calling \texttt{stat} or \texttt{lstat}), error message will be send to \texttt{stderr} and the search will continue with the next file instead of terminating the whole program.
+\end{itemize}
+
+\section{System Calls}
+Following system calls are used:
+\begin{itemize}
+\item \texttt{opendir}: To open a directory, in order to get its contents.
+\item \texttt{readdir}: To read the contents of a directory, and getting the filenames.
+\item \texttt{stat/lstat}: To get file information: size, type, permissions and number of hard links. \texttt{stat} is used for regular files, \texttt{lstat} is used for links.
+\end{itemize}
+
+\section{Regex Matching}
+\begin{enumerate}
+\item Both \texttt{filename} and \texttt{regexString} converted to lower case to ensure case insensitivity.
+\item \texttt{+} character converted into \texttt{\textbackslash{}+} in \texttt{filename} to be able to compare escaped \texttt{+} character. If both strings are equal then it is a match.
+\item Strings are compared char by char. In \texttt{regexString} when it is encountered with \texttt{+} repated character is consumed from \texttt{filename}.
+\item In order to handle situation where \texttt{regexString} includes preceding character right after \texttt{+} (e.g regex string is \texttt{lost+tile} where file name is \texttt{losttile}), the number of consumed character is counted. If it is less than minimum required repetation, then it is not a match.
+\end{enumerate}
+
+This method fails to match when there are multiple occurances of the \textbf{same} regex one after another. (e.g. regexString is \texttt{lost+t+ile}) 
+
+\section{Test Cases}
+Program tested with different cases and also with the valgrind to check memory leaks. According the output of the valgrind, "All heap blocks were freed -- no leaks are possible".
+
+\begin{ccode}
+valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --verbose \
+         --log-file=valgrind-out.txt \
+         ...
+\end{ccode}
+
+\newpage
+
+\subsection{Invalid option}
+
+\begin{ccode}
+   $ ./output -w ./test -x rwxrwxrwx
+\end{ccode}
+
+\begin{minted}[breaklines,frame=single]{text}
+./program: invalid option -- 'x'
+Usage: ./untitled2 -w targetDirectoryPath [-f filename] [-b file size] [-t file type] [-p permissions] [-l number of links] 
+
+ -f filename       Filename, case insensitive, supporting the following reqular expressin: +
+ -b file size      File size in bytes
+ -t file type      File type (d: directory, s: socket, b: block device, c: character device f: regular file, p: pipe, l: symbolic link)
+ -p rwxr-xr--      Permissions, as 9 characters
+ -l number of links
+ -w path           The path in which to search recursively (i.e. across all of its subtrees)
+
+At least one of the search criteria must be employed.
+\end{minted}
+
+\subsection{Target directory not specified}
+Prints error message to \texttt{stderr}, and usage to \texttt{stdout}.
+\subsection{No search criteria specified}
+Prints error message to \texttt{stderr}, and usage to \texttt{stdout}.
+\subsection{With interrupt signal}
+\texttt{Control-C} (\texttt{SIGINT}) while listing all the directories. No memory leaks.
+
+\begin{ccode}
+   $ ./output -w / -t d
+\end{ccode}
+
+\begin{minted}[frame=single]{text}
+...(truncated)
+|----------------------LC_MESSAGES
+|--------------------zh_TW
+|----------------------LC_MESSAGES
+|------------------mime
+|--------------------application
+^CProgram interrupted by signal: SIGINT
+\end{minted}
+\end{document}
