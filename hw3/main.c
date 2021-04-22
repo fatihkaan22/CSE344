@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +13,10 @@
 #include <unistd.h>
 
 #define N 64
+#define BUF_LN 512
 #define SHM_SIZE 1024
 #define ALL_COOLED_DOWN_MSG -2
+#define USR_INTERRUPT_MSG -3
 
 struct potato {
   int id; // same as pid of its creator process
@@ -33,6 +36,26 @@ struct file {
   int fd;
 };
 
+void usage(char *argv0) {
+  printf(
+      "Usage: %s -b haspatatoornot -s nameofsharedmemory -f filewithfifonames\n"
+      " -b haspatatoornot        how many times the potato has to be switched "
+      "between processes in order to cool down\n"
+      " -s nameofsharedmemory    the name of the posix named shared memory  "
+      "segment  used  for  internal  IPC\n"
+      " -f filewithfifonames     ascii file will contain the names of the "
+      "fifoes that will be used to communicate among the processes\n"
+      " -m namedsemaphore         named posix semaphore to be used for "
+      "synchronization\n",
+      argv0);
+}
+
+bool usr_interrupt = false;
+void handler(int sig) {
+  if (sig == SIGINT)
+    usr_interrupt = true;
+}
+
 void log_send(const struct potato *p, char *fifoname) {
   printf("pid=%d sending potato number %d to %s", getpid(), p->id, fifoname);
   printf("; this is switch number %d / %d\n", p->switchcount, p->noswitches);
@@ -50,33 +73,21 @@ void log_cooldown(int potato_id) {
 void all_fifos_created(void *addr) {
   struct shared_memory *m = addr;
   for (int i = 0; i < m->no_created_fifos; ++i) {
-    sem_post(&m->all_fifos_created);
+    if (sem_post(&m->all_fifos_created) == -1) {
+      perror("sem_post");
+      exit(EXIT_FAILURE);
+    }
   }
-}
-
-void usage(char *argv0) {
-  printf(
-      "Usage: %s -b haspatatoornot -s nameofsharedmemory -f filewithfifonames\n"
-      " -b haspatatoornot        how many times the potato has to be switched "
-      "between processes in order to cool down\n"
-      " -s nameofsharedmemory    the name of the posix named shared memory  "
-      "segment  used  for  internal  IPC\n"
-      " -f filewithfifonames     ascii file will contain the names of the "
-      "fifoes that will be used to communicate among the processes\n"
-      " -m namedsemaphore         named posix semaphore to be used for "
-      "synchronization\n",
-      argv0);
 }
 
 int create_fifo(char *filename, char *fifopath, void *addr) {
   struct shared_memory *m = addr;
-  FILE *fp = fopen(filename, "r"); // TODO: write, check error
+  FILE *fp = fopen(filename, "r");
   if (fp == NULL) {
     perror("fopen");
-    abort(); // TODO: ???
+    exit(EXIT_FAILURE);
   }
-  /* printf("no fifos: %d\n", get_no_created_fifos(addr)); */
-  char buf[512]; // FIXME
+  char buf[BUF_LN];
   int res_mkfifo;
   char c;
   for (int i = 0; i < m->no_created_fifos;) {
@@ -89,7 +100,7 @@ int create_fifo(char *filename, char *fifopath, void *addr) {
       ++i;
   }
 
-  if (fgets(buf, 512, fp) == NULL) {
+  if (fgets(buf, BUF_LN, fp) == NULL) {
     fprintf(stderr, "fgets");
   }
   buf[strcspn(buf, "\n")] = 0; // remove trailing \n
@@ -139,6 +150,7 @@ int init_shared_mem(void **addr, const char *sharedmem) {
   return create_shm;
 }
 
+// returns the potato with specified id
 struct potato *get_potato(struct potato *arr, int size, int id) {
   struct potato *p;
   for (int i = 0; i < size; ++i) {
@@ -148,9 +160,10 @@ struct potato *get_potato(struct potato *arr, int size, int id) {
     }
   }
   fprintf(stderr, "potato not found, id: %d, no_potatos: %d\n", id, size);
-	exit(EXIT_FAILURE);
+  exit(EXIT_FAILURE);
 }
 
+// registers potato in shared memory
 int register_potato(void *addr, int noswitches) {
   struct shared_memory *m = addr;
   m->potato_arr[m->no_potatos].id = getpid();
@@ -171,13 +184,19 @@ int open_fifos(char *filename, void *addr, struct file *fifo_fds,
     exit(EXIT_FAILURE);
   }
   for (int i = 0; i < m->no_created_fifos; ++i) {
-    char buf[512]; // FIXME
-    if (fgets(buf, 512, fp) == NULL) {
+    char buf[BUF_LN];
+    if (fgets(buf, BUF_LN, fp) == NULL) {
       fprintf(stderr, "fgets");
       exit(EXIT_FAILURE);
     }
     buf[strcspn(buf, "\n")] = 0; // remove trailing \n
-    strcpy(fifo_fds[i].name, buf);
+    char *name = strrchr(buf, '/');
+    if (name == NULL) {
+      name = buf;
+    } else {
+      name++;
+    }
+    strcpy(fifo_fds[i].name, name);
     if (strcmp(buf, fifo_to_read) == 0) {
       fifo_fds[i].fd = open(buf, O_RDONLY);
       fd_fifor_idx = i;
@@ -187,6 +206,7 @@ int open_fifos(char *filename, void *addr, struct file *fifo_fds,
     if (fifo_fds[i].fd == -1)
       perror("open()");
   }
+  fclose(fp);
   return fd_fifor_idx;
 }
 
@@ -209,13 +229,12 @@ int write_random_fifo(struct file *fifo_fds, int fifo_fds_size,
   return 0;
 }
 
-// send termination message to fifos
+// send message to fifos: (ALL_COOLED_DOWN_MSG, USR_INTERRUPT_MSG)
 int let_others_know(struct file *fifo_fds, int fifo_fds_size,
-                    int exclude_fifo_idx) {
+                    int exclude_fifo_idx, int msg) {
   for (int i = 0; i < fifo_fds_size; ++i) {
     if (i == exclude_fifo_idx)
       continue;
-    int msg = ALL_COOLED_DOWN_MSG;
     if (write(fifo_fds[i].fd, &msg, sizeof(int)) == -1) {
       perror("write");
       exit(EXIT_FAILURE);
@@ -239,6 +258,8 @@ int main(int argc, char **argv) {
   char *sharedmem = NULL;
   char *fifonames = NULL;
   char *semaphore = NULL;
+
+  signal(SIGINT, handler);
 
   while ((opt = getopt(argc, argv, "b:s:f:m:")) != -1) {
     switch (opt) {
@@ -293,7 +314,10 @@ int main(int argc, char **argv) {
 #endif
   // only 1 process is going to try to initialize
   // also try to get fifo, since it involves shared memory i/o
-  sem_wait(sem);
+  if (sem_wait(sem) == -1) {
+    perror("sem_wait");
+    exit(EXIT_FAILURE);
+  }
   void *addr;
   int create_shm = init_shared_mem(&addr, sharedmem);
 
@@ -303,15 +327,21 @@ int main(int argc, char **argv) {
     printf("%s\n", "new shared memory");
 #endif
     struct shared_memory m;
-    sem_init(&m.all_fifos_created, 1, 0);
+    if (sem_init(&m.all_fifos_created, 1, 0) == -1) {
+			perror("sem_init");
+			exit(EXIT_FAILURE);
+		}
     m.no_created_fifos = 0;
     m.no_potatos = 0;
     memcpy(addr, &m, sizeof(struct shared_memory));
   }
 
-  char fifo_to_read[512]; // FIXME
+  char fifo_to_read[BUF_LN];
   create_fifo(fifonames, fifo_to_read, addr);
-  sem_post(sem);
+  if (sem_post(sem) == -1) {
+    perror("sem_post");
+    exit(EXIT_FAILURE);
+  }
 #ifdef DEBUG
   printf("%s created\n", fifo_to_read);
   printf("waiting for others to create their fifos...\n");
@@ -320,13 +350,33 @@ int main(int argc, char **argv) {
   struct shared_memory *m = addr;
 
   if (noswitches != 0) {
-    sem_wait(sem);
+    if (sem_wait(sem) == -1) {
+      perror("sem_wait");
+      exit(EXIT_FAILURE);
+    }
     // critical section: shared memory i/o
     register_potato(addr, noswitches);
-    sem_post(sem);
+    if (sem_post(sem) == -1) {
+      perror("sem_post");
+      exit(EXIT_FAILURE);
+    }
   }
 
-  sem_wait(&m->all_fifos_created);
+  if (usr_interrupt) {
+#ifdef DEBUG
+    puts("User Interrupt");
+#endif
+    if (shm_unlink(sharedmem) == -1 && errno != ENOENT)
+      perror("shm_unlink");
+    if (sem_unlink(semaphore) == -1 && errno != ENOENT)
+      perror("sem_unlink");
+    exit(EXIT_SUCCESS);
+  }
+
+  if (sem_wait(&m->all_fifos_created) == -1) {
+    perror("sem_wait");
+    exit(EXIT_FAILURE);
+  }
 
 #ifdef DEBUG
   puts("== SHARED MEMORY == ");
@@ -346,44 +396,80 @@ int main(int argc, char **argv) {
   int fifor_fd = fifo_fds[fifor_fd_idx].fd;
   char *fifor_name = fifo_fds[fifor_fd_idx].name;
 
-  if (noswitches != 0) { // if have initial potato
-    sem_wait(sem);
+  if (noswitches != 0) { // if have an initial potato
+    if (sem_wait(sem) == -1) {
+      perror("sem_wait");
+      exit(EXIT_FAILURE);
+    }
     struct potato *p = get_potato(m->potato_arr, m->no_potatos, getpid());
     p->switchcount++;
     write_random_fifo(fifo_fds, m->no_created_fifos, fifor_fd_idx, p);
-    sem_post(sem);
+    if (sem_post(sem) == -1) {
+      perror("sem_post");
+      exit(EXIT_FAILURE);
+    }
   }
 
-  int potato_id;
-  while (true) {
-    if (read(fifor_fd, &potato_id, sizeof(int)) == -1)
+  int msg;
+  while (!usr_interrupt) {
+    if (read(fifor_fd, &msg, sizeof(int)) == -1)
       perror("read");
-    if (potato_id == ALL_COOLED_DOWN_MSG) {
+    if (msg == ALL_COOLED_DOWN_MSG || msg == USR_INTERRUPT_MSG) {
       break;
     }
-    sem_wait(sem);
+    int potato_id = msg;
+    if (sem_wait(sem) == -1) {
+      perror("sem_wait");
+      exit(EXIT_FAILURE);
+    }
     struct potato *p = get_potato(m->potato_arr, m->no_potatos, potato_id);
     p->switchcount++;
     if (p->switchcount == p->noswitches) { // cool down
       log_cooldown(potato_id);
       if (all_cooled_down(m->potato_arr, m->no_potatos)) {
-        let_others_know(fifo_fds, m->no_created_fifos, fifor_fd_idx);
+        let_others_know(fifo_fds, m->no_created_fifos, fifor_fd_idx,
+                        ALL_COOLED_DOWN_MSG);
         break;
       }
     } else {
       log_receive(potato_id, fifor_name);
       write_random_fifo(fifo_fds, m->no_created_fifos, fifor_fd_idx, p);
     }
-    sem_post(sem);
+    if (sem_post(sem) == -1) {
+      perror("sem_post");
+      exit(EXIT_FAILURE);
+    }
+  }
+
+  int status = EXIT_SUCCESS;
+  if (usr_interrupt) {
+#ifdef DEBUG
+    puts("User Interrupt");
+#endif
+    let_others_know(fifo_fds, m->no_created_fifos, fifor_fd_idx,
+                    USR_INTERRUPT_MSG);
+  }
+
+  // free resources
+  for (int i = 0; i < m->no_created_fifos; ++i) {
+    if (close(fifo_fds[i].fd) == -1)
+      perror("close");
+    status = EXIT_FAILURE;
+  }
+
+  if (sem_destroy(&m->all_fifos_created) == -1) {
+    perror("sem_close");
+    status = EXIT_FAILURE;
   }
 
   if (shm_unlink(sharedmem) == -1 && errno != ENOENT) {
     perror("shm_unlink");
-    exit(EXIT_FAILURE);
+    status = EXIT_FAILURE;
   }
+  sem_close(sem);
   if (sem_unlink(semaphore) == -1 && errno != ENOENT) {
     perror("sem_unlink");
-    exit(EXIT_FAILURE);
+    status = EXIT_FAILURE;
   }
-  exit(EXIT_SUCCESS);
+  exit(status);
 }

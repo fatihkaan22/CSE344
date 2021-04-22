@@ -1,8 +1,6 @@
 CC = gcc
 CFLAGS = -pedantic-errors -Wall -std=gnu99 -g -lrt -lpthread
-CFLAGS += -DDEBUG
-
-HDRS := $(wildcard *.h)
+# CFLAGS += -DDEBUG
 
 SRCS := main.c
 
@@ -20,4 +18,3 @@ $(EXEC): $(OBJS)
 
 clean:
 	rm -f $(EXEC) $(OBJS)
-	rm -f ./fifos/* # TODO: delete this line before submit

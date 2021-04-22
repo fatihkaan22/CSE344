@@ -1,4 +1,4 @@
-% Created 2021-04-22 Thu 17:07
+% Created 2021-04-23 Fri 01:14
 % Intended LaTeX compiler: pdflatex
 \documentclass[a4paper]{article}
 \usepackage[utf8]{inputenc}
@@ -27,10 +27,10 @@
 \newminted{c}{frame=single}
 \author{Fatih Kaan Salgır - 171044009}
 \date{}
-\title{CSE344 - System Programming - Homework \#1}
+\title{CSE344 - System Programming - Homework \#2}
 \hypersetup{
  pdfauthor={Fatih Kaan Salgır - 171044009},
- pdftitle={CSE344 - System Programming - Homework \#1},
+ pdftitle={CSE344 - System Programming - Homework \#2},
  pdfkeywords={},
  pdfsubject={},
  pdfcreator={Emacs 27.2 (Org mode 9.4.5)}, 
@@ -38,12 +38,9 @@
 \begin{document}
 
 \maketitle
-\begin{itemize}
-\item Maximum number of fifo to handle is defined as N
-\end{itemize}
 
-\section{Problem Solution Approach}
-\label{sec:orgfa0ac24}
+\section{Design Explanation}
+\label{sec:orgb6045d4}
 
 \begin{enumerate}
 \item First process will create the shared memory, and all of them are going open it.
@@ -54,8 +51,16 @@
 \item It will gets the potato with potato id, increments its number of switch, checks if cooled down. If its the case, it will let others know and terminate. Otherwise it will write again to some random fifo.
 \end{enumerate}
 
+\noindent\rule{\textwidth}{0.5pt}
+
+\begin{itemize}
+\item Maximum number of fifo to handle is defined as \texttt{N} (64).
+\item Shared memory size defined as \texttt{SHM\_SIZE} (1024).
+\end{itemize}
+
+
 \subsection{Shared Memory Initilization}
-\label{sec:orge301529}
+\label{sec:org6d0c5c0}
 First \texttt{shm\_open} is called with both \texttt{O\_CREAT} and \texttt{O\_EXCL} flags. As the man page of the \texttt{shm\_open} states, if the shared memory already exist, it will return -1 and \texttt{errno} will set to \texttt{EEXIST}. 
 If shared memory already exists then, simply \texttt{mmap} can be used to establist the mapping address.
 If shared memory is created, some initialization steps needed:
@@ -65,9 +70,11 @@ If shared memory is created, some initialization steps needed:
 \item number of created files will be set to 0.
 \item number of potatoes will be set to 0.
 \end{itemize}
+Shared memory initialization is protected by using named semaphore.
 
+\newpage
 \subsection{Shared Memory Design}
-\label{sec:orgfd53198}
+\label{sec:org3550aa2}
 \texttt{struct shared\_memory} is used in order to organize shared memory.
 
 \begin{center}
@@ -94,13 +101,68 @@ size of potatoes & [int]\\
 \end{center}
 
 \subsection{Waiting for FIFO Creation}
-\label{sec:org64c899a}
+\label{sec:org1c542d8}
 \begin{enumerate}
 \item A process is going to create their fifo and wait for other process using \texttt{sem\_wait()}. This semaphore is different from the one given as command-line arguement. It lies in the shared memory, and inital value is 0. (\texttt{all\_fifos\_created})
 \item Processes will create the fifos one by one, to avoid race condition. The synchronization technique is used here is named semaphore.
 \item If a process has been reached to \texttt{EOF}, so this process is the last one. This means all other processes are ready to continue. It will increment to value of \texttt{sem\_post()} N times (number of processes).
 \end{enumerate}
 
-\begin{ccode}
-\end{ccode}
+\subsection{Handling SIGINT}
+\label{sec:org54c10ae}
+In case of receiving \texttt{SIGINT}, processs will stop switching potatoes. Let the others know that it has received \texttt{SIGINT} via fifo. As a result all processes will be terminated. And give all the resources (shared memory, semaphore, open files) back to the system.
+If a process receives \texttt{SIGINT} before it has a chance to open the fifos, in this case it simply exits.
+\newpage
+\section{Running \& Test Cases}
+\label{sec:org5fe5513}
+
+Program tested with different cases and also with the valgrind to check memory leaks. According the output of the valgrind, "All heap blocks were freed -- no leaks are possible".
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --verbose \
+         --log-file=valgrind-out.txt \
+         ...
+\end{minted}
+
+
+Running with 4 processes and 3 potatoes:
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+./player -b 5 -f fifonames -m s1 -s sharedmem &
+./player -b 0 -f fifonames -m s1 -s sharedmem &
+./player -b 8 -f fifonames -m s1 -s sharedmem &
+./player -b 3 -f fifonames -m s1 -s sharedmem &
+\end{minted}
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+pid=2726573 sending potato number 2726573 to fifos/fifo3; this is switch number 1 / 3
+pid=2726572 sending potato number 2726572 to fifos/fifo4; this is switch number 1 / 8
+pid=2726572 receiving potato number 2726573 from fifos/fifo3
+pid=2726572 sending potato number 2726573 to fifos/fifo2; this is switch number 2 / 3
+pid=2726570 sending potato number 2726570 to fifos/fifo3; this is switch number 1 / 5
+pid=2726572 receiving potato number 2726570 from fifos/fifo3
+pid=2726572 sending potato number 2726570 to fifos/fifo4; this is switch number 2 / 5
+pid=2726571; potato number 2726573 has cooled down
+pid=2726573 receiving potato number 2726572 from fifos/fifo4
+pid=2726573 sending potato number 2726572 to fifos/fifo2; this is switch number 2 / 8
+pid=2726573 receiving potato number 2726570 from fifos/fifo4
+pid=2726573 sending potato number 2726570 to fifos/fifo1; this is switch number 3 / 5
+pid=2726571 receiving potato number 2726572 from fifos/fifo2
+pid=2726571 sending potato number 2726572 to fifos/fifo3; this is switch number 3 / 8
+pid=2726572 receiving potato number 2726572 from fifos/fifo3
+pid=2726572 sending potato number 2726572 to fifos/fifo4; this is switch number 4 / 8
+pid=2726573 receiving potato number 2726572 from fifos/fifo4
+pid=2726573 sending potato number 2726572 to fifos/fifo3; this is switch number 5 / 8
+pid=2726572 receiving potato number 2726572 from fifos/fifo3
+pid=2726572 sending potato number 2726572 to fifos/fifo4; this is switch number 6 / 8
+pid=2726573 receiving potato number 2726572 from fifos/fifo4
+pid=2726573 sending potato number 2726572 to fifos/fifo1; this is switch number 7 / 8
+pid=2726570 receiving potato number 2726570 from fifos/fifo1
+pid=2726570 sending potato number 2726570 to fifos/fifo2; this is switch number 4 / 5
+pid=2726570; potato number 2726572 has cooled down
+pid=2726571; potato number 2726570 has cooled down
+\end{minted}
 \end{document}
