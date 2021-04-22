@@ -1,14 +1,12 @@
 CC = gcc
-CFLAGS = -pedantic-errors -Wall -std=gnu99 -g -lrt
+CFLAGS = -pedantic-errors -Wall -std=gnu99 -g -lrt -lpthread
 CFLAGS += -DDEBUG
 
 HDRS := $(wildcard *.h)
 
-SRCS := $(wildcard *.c)
-# SRCS := hw1.c
+SRCS := main.c
 
 OBJS := $(SRCS:.c=.o)
-# OBJS := hw1.o deque.o
 
 EXEC := player
 

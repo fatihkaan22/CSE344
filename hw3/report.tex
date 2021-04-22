@@ -1,0 +1,106 @@
+% Created 2021-04-22 Thu 17:07
+% Intended LaTeX compiler: pdflatex
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{grffile}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{textcomp}
+\usepackage{amssymb}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\documentclass{article}
+\usepackage{here}
+\usepackage{xcolor}
+\usepackage[margin=3.0cm]{geometry}
+\usepackage{amsmath}
+\usepackage{parskip}
+\renewcommand\arraystretch{1.4}
+\usepackage[margin=1in]{geometry}
+\usepackage{minted}
+\definecolor{bg}{rgb}{0.95,0.95,0.95}
+\newminted{c}{frame=single}
+\author{Fatih Kaan Salgır - 171044009}
+\date{}
+\title{CSE344 - System Programming - Homework \#1}
+\hypersetup{
+ pdfauthor={Fatih Kaan Salgır - 171044009},
+ pdftitle={CSE344 - System Programming - Homework \#1},
+ pdfkeywords={},
+ pdfsubject={},
+ pdfcreator={Emacs 27.2 (Org mode 9.4.5)}, 
+ pdflang={English}}
+\begin{document}
+
+\maketitle
+\begin{itemize}
+\item Maximum number of fifo to handle is defined as N
+\end{itemize}
+
+\section{Problem Solution Approach}
+\label{sec:orgfa0ac24}
+
+\begin{enumerate}
+\item First process will create the shared memory, and all of them are going open it.
+\item The process will create the fifo. This fifo will be the fifo that the process reads. If the process has a potato, it will register to shared memory with the pid. And wait for creation of all fifos.
+\item All of the fifos are going to be opened. 1 one of them to read, other ones to write.
+\item If process has a potato it will write its pid to a random fifo.
+\item The process will read its fifo until it reads either a potato id or a termination message (integer, defined as -2) when all potatoes are cooled down.
+\item It will gets the potato with potato id, increments its number of switch, checks if cooled down. If its the case, it will let others know and terminate. Otherwise it will write again to some random fifo.
+\end{enumerate}
+
+\subsection{Shared Memory Initilization}
+\label{sec:orge301529}
+First \texttt{shm\_open} is called with both \texttt{O\_CREAT} and \texttt{O\_EXCL} flags. As the man page of the \texttt{shm\_open} states, if the shared memory already exist, it will return -1 and \texttt{errno} will set to \texttt{EEXIST}. 
+If shared memory already exists then, simply \texttt{mmap} can be used to establist the mapping address.
+If shared memory is created, some initialization steps needed:
+\begin{itemize}
+\item \texttt{ftruncate} will be called to set its size.
+\item Semaphore in the shared memory will be set to 0.
+\item number of created files will be set to 0.
+\item number of potatoes will be set to 0.
+\end{itemize}
+
+\subsection{Shared Memory Design}
+\label{sec:orgfd53198}
+\texttt{struct shared\_memory} is used in order to organize shared memory.
+
+\begin{center}
+\ttfamily{}
+\begin{tabular}{l|l}
+all fifos are created & [sem \_t]\\
+\hline
+number of created fifos & [int]\\
+\hline
+size of potatoes & [int]\\
+\hline
+\#1 potato & [struct\{int, int, int\}]\\
+\quad \#1 id & [int]\\
+\quad \#1 switch count & [int]\\
+\quad \#1 number of switches & [int]\\
+\hline
+\#2 potato & [struct\{int, int, int\}]\\
+\quad \#2 id & [int]\\
+\quad \#2 switch count & [int]\\
+\quad \#2 number of switches & [int]\\
+\hline
+\ldots{} & \\
+\end{tabular}
+\end{center}
+
+\subsection{Waiting for FIFO Creation}
+\label{sec:org64c899a}
+\begin{enumerate}
+\item A process is going to create their fifo and wait for other process using \texttt{sem\_wait()}. This semaphore is different from the one given as command-line arguement. It lies in the shared memory, and inital value is 0. (\texttt{all\_fifos\_created})
+\item Processes will create the fifos one by one, to avoid race condition. The synchronization technique is used here is named semaphore.
+\item If a process has been reached to \texttt{EOF}, so this process is the last one. This means all other processes are ready to continue. It will increment to value of \texttt{sem\_post()} N times (number of processes).
+\end{enumerate}
+
+\begin{ccode}
+\end{ccode}
+\end{document}
