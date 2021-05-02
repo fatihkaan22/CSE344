@@ -23,6 +23,7 @@
 struct shared_memory *mem;
 int memsize = 0;
 int *citizen_pids;
+int *vaccinator_doses;
 
 struct shared_memory {
   sem_t sem, empty, vaccines_available;
@@ -31,6 +32,9 @@ struct shared_memory {
   int bufsize;
   int next_citizen_idx;
   int current_tour;
+  bool eof;
+  int no_nurse_terminated;
+  int no_citizen_terminated;
 };
 
 void handler(int signum) {
@@ -43,17 +47,91 @@ void handler(int signum) {
   }
 }
 
+// if exist return index, -1 otherwise
+bool find(int item, int *arr, int size) {
+  for (int i = 0; i < size; ++i) {
+    if (arr[i] == item)
+      return i;
+  }
+  return -1;
+}
+char *get_ordinal(int value) {
+  char *ordinals[] = { "st", "nd", "rd", "th" };
+  value %= 100;
+  if (3 < value && value < 21)
+    return ordinals[3];
+  switch (value % 10) {
+  case 1:
+    return ordinals[0];
+  case 2:
+    return ordinals[1];
+  case 3:
+    return ordinals[2];
+  default:
+    return ordinals[3];
+  }
+}
+
 void log_nurse(int id, int pid, char vaccine, int total1, int total2) {
+#ifdef DEBUG
+  printf(Y);
+#endif
   printf("Nurse %d (pid=%d) has brought vaccine %c: the clinic has %d vaccine1 "
          "and %d vaccine2.\n",
          id, pid, vaccine, total1, total2);
+#ifdef DEBUG
+  printf(T);
+#endif
   fflush(stdout);
 }
+
+void log_nurse_done() {
+  puts("Nurses have carried all vaccines to hte buffer, terminating.");
+}
+
+void log_inventory(int vacc1, int vacc2) {
+#ifdef DEBUG
+  printf(C);
+#endif
+	printf("the clinic has %d vaccine1 and %d vaccine2\n", vacc1, vacc2);
+#ifdef DEBUG
+  printf(T);
+#endif
+}
+
+void log_citizen(int id, int pid, int times) {
+#ifdef DEBUG
+  printf(C);
+#endif
+  printf("Citizen %d (pid=%d) is vaccinated for the %d%s time: \n", id, pid,
+         times, get_ordinal(times));
+	/* log_inventory(); */
+#ifdef DEBUG
+  printf(T);
+#endif
+}
+
+void log_citizen_done() { puts("All citizens have been vacinated."); }
 
 void log_welcome(int c, int t) {
   printf("Welcome to GTU344 clinic. Number of citizens to vaccinate "
          "c=%d with t=%d doeses.\n",
          c, t);
+}
+
+void log_vaccinator_done(int id, int pid, int nodose) {
+  printf("Vaccinator %d (pid=%d) vaccinated %d doses. ", id, pid, nodose);
+}
+
+void log_vaccinator(int id, int pid, int citizen_pid) {
+#ifdef DEBUG
+  printf(G);
+#endif
+  printf("Vaccinator %d (pid=%d) is inviting citizen pid=%d to the clinic.\n",
+         id, pid, citizen_pid);
+#ifdef DEBUG
+  printf(T);
+#endif
 }
 
 int add_vaccine(char c) {
@@ -78,30 +156,22 @@ int remove_vaccines() {
   return 0;
 }
 
-int invite_citizen(int pid) {
-  printf("kill pid: %d\n", pid);
-  kill(pid, SIGUSR1);
-  return 0;
-}
-
 void init_mem(int bufsize) {
   mem->bufsize = bufsize;
   mem->novacc1 = mem->novacc2 = 0;
   mem->next_citizen_idx = 0;
   mem->current_tour = 0;
+  mem->eof = false;
+  mem->no_nurse_terminated = 0;
+  mem->no_citizen_terminated = 0;
   if (sem_init(&mem->sem, 1, 1) == -1) {
     perror("sem_init");
     exit(EXIT_FAILURE);
   }
-  printf("%d\n", bufsize);
   if (sem_init(&mem->empty, 1, bufsize) == -1) {
     perror("sem_init");
     exit(EXIT_FAILURE);
   }
-  /* if (sem_init(&mem->full, 1, 0) == -1) { */
-  /*   perror("sem_init"); */
-  /*   exit(EXIT_FAILURE); */
-  /* } */
   if (sem_init(&mem->vaccines_available, 1, 0) == -1) {
     perror("sem_init");
     exit(EXIT_FAILURE);
@@ -126,63 +196,64 @@ int strtoint(char *str) {
 
 // producer
 int nurse(int id, int fd) {
-  puts("nurse");
   char c;
   int nbytes;
   int novacc_this, novacc_other;
-  do {
+  while (!mem->eof) {
     if (sem_wait(&mem->empty) == -1) {
       perror("sem_wait()");
       exit(EXIT_FAILURE);
     }
+    if (mem->eof)
+      break;
     if (sem_wait(&mem->sem) == -1) {
       perror("sem_wait()");
       exit(EXIT_FAILURE);
     }
     nbytes = read(fd, &c, 1);
-    bool eof = false;
-    if (c == '1' || c == '2') {
+    if (nbytes == -1) {
+      perror("read");
+      exit(EXIT_FAILURE);
+    } else if (nbytes == 0) {
+      mem->eof = true;
+    } else if (c == '1' || c == '2') {
       add_vaccine(c);
       log_nurse(id, getpid(), c, mem->novacc1, mem->novacc2);
       // if there are enough amount of vaccines, post semaphore
       novacc_this = (c == '1') ? mem->novacc1 : mem->novacc2;
       novacc_other = (c == '1') ? mem->novacc2 : mem->novacc1;
-    } else {
-      eof = true;
-#ifdef DEBUG
-      printf(C "EOF\n" T);
-#endif
     }
+
     if (sem_post(&mem->sem) == -1) {
       perror("sem_post()");
       exit(EXIT_FAILURE);
     }
-    if (!eof && novacc_this <= novacc_other) {
+    if (!mem->eof && novacc_this <= novacc_other) {
       sem_post(&mem->vaccines_available);
-#ifdef DEBUG
-      int val;
-      sem_getvalue(&mem->vaccines_available, &val);
-      printf(Y "vaccines_available: %d\n" T, val);
-      fflush(stdout);
-#endif
     }
-  } while (nbytes != 0);
+  }
+
+  sem_post(&mem->empty);
 #ifdef DEBUG
-  puts(R "nurse end" T);
+  printf(R "nurse %d terminated\n" T, id);
 #endif
+  mem->no_nurse_terminated++;
   return 0;
 }
 
 // consumer
-int vaccinator(int nocitizens, int noshots) {
+int vaccinator(int id, int nocitizens, int noshots,
+               int c_pipes[nocitizens][2]) {
+  int nodose = 0;
+  char msg = 'x'; // message to send from fifo
   // wait until both vaccinates are available
-  do {
+  while (mem->current_tour != noshots) {
     if (sem_wait(&mem->vaccines_available) == -1) {
       perror("sem_wait()");
       exit(EXIT_FAILURE);
     }
-    /* if (mem->current_tour == noshots) */
-    /*   break; */
+    if (mem->current_tour == noshots)
+      break;
     if (sem_wait(&mem->sem) == -1) {
       perror("sem_wait()");
       exit(EXIT_FAILURE);
@@ -198,9 +269,6 @@ int vaccinator(int nocitizens, int noshots) {
       mem->next_citizen_idx = 0;
     }
 
-    if (mem->next_citizen_idx)
-
-      invite_citizen(citizen_pids[citizen_idx]);
     if (sem_post(&mem->sem) == -1) {
       perror("sem_post()");
       exit(EXIT_FAILURE);
@@ -209,47 +277,35 @@ int vaccinator(int nocitizens, int noshots) {
       perror("sem_post()");
       exit(EXIT_FAILURE);
     }
-  } while (true);
-  /* } while (mem->current_tour != noshots); */
 
-  /* sem_post(&mem->vaccines_available); */
+    // invite citizen
+    write(c_pipes[citizen_idx][1], &msg, sizeof(char));
+    log_vaccinator(id, getpid(), citizen_idx); // TODO: citizen pid
+    nodose++;
+  }
+
+  sem_post(&mem->vaccines_available);
 
 #ifdef DEBUG
-  puts(R "vaccinator end" T);
+  printf(R "vaccinator %d terminated\n" T, id);
 #endif
+  vaccinator_doses[id - 1] = nodose;
   return 0;
 }
 
-int citizen(int noshots) {
-  printf("citizen %d\n", getpid());
+int citizen(int id, int noshots, int c_pipes[2]) {
+  char *m;
 
-  sigset_t mask;
-  sigemptyset(&mask);
-  sigprocmask(SIG_BLOCK, &mask, NULL);
-
-  struct sigaction act;
-  act.sa_handler = handler;
-  act.sa_flags = 0;
-  sigemptyset(&act.sa_mask);
-  sigaddset(&act.sa_mask, SIGUSR1);
-  if (sigaction(SIGUSR1, &act, NULL) == -1) {
-    perror("sigaction");
-    exit(EXIT_FAILURE);
-  }
-
-  /* sigfillset(&mask); */
-  /* sigdelset(&mask, SIGUSR1); */
   for (int i = 0; i < noshots; ++i) {
-    // wait for only SIGUR1
-    printf("waiting %d\n", i);
-    sigsuspend(&mask);
+    read(c_pipes[0], &m, 1);
+    log_citizen(id, getpid(), i + 1);
   }
-  /* sigprocmask(SIG_UNBLOCK, &mask, NULL); */
 
 #ifdef DEBUG
-  puts(R "citizen end" T);
+  printf(R "citizen %d terminated\n" T, id);
   fflush(stdout);
 #endif
+  mem->no_citizen_terminated++;
   return 0;
 }
 
@@ -316,13 +372,14 @@ int main(int argc, char *argv[]) {
   log_welcome(nocitizens, noshots);
   int noprocesses = nonurses + novaccinators + nocitizens;
   // init buffer
-  memsize += 2 * sizeof(int);   // vaccines
-  memsize += sizeof(int);       // size of buffer
-  memsize += 4 * sizeof(sem_t); // semaphores
+  memsize = sizeof(struct shared_memory); // vaccines
   mem = mmap(NULL, memsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
              -1, 0);
   citizen_pids = mmap(NULL, nocitizens * sizeof(int), PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  vaccinator_doses =
+      mmap(NULL, novaccinators * sizeof(int), PROT_READ | PROT_WRITE,
+           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   init_mem(bufsize);
   if (mem == MAP_FAILED) {
     perror("mmap()");
@@ -351,16 +408,20 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  int c_pipes[nocitizens][2];
   int c_pid;
   for (int i = 0; i < nocitizens; ++i) {
+    pipe(c_pipes[i]); // TODO: err control
     switch (c_pid = fork()) {
     case -1:
       perror("fork");
       exit(EXIT_FAILURE);
     case 0:
-      citizen(noshots);
+      close(c_pipes[i][1]); // TODO: err
+      citizen(i + 1, noshots, c_pipes[i]);
       exit(EXIT_SUCCESS);
     default:
+      close(c_pipes[i][0]); // TODO: err
       citizen_pids[i] = c_pid;
     }
   }
@@ -371,7 +432,7 @@ int main(int argc, char *argv[]) {
       perror("fork");
       exit(EXIT_FAILURE);
     case 0:
-      vaccinator(nocitizens, noshots);
+      vaccinator(i + 1, nocitizens, noshots, c_pipes);
       exit(EXIT_SUCCESS);
     }
   }
@@ -383,7 +444,17 @@ int main(int argc, char *argv[]) {
     pid = wait(&status);
     if (pid == -1) {
       perror("wait");
+    } else if (mem->no_nurse_terminated == nonurses) {
+      mem->no_nurse_terminated++; // to avoid print multiple times
+      log_nurse_done();
+    } else if (mem->no_citizen_terminated == nocitizens) {
+      mem->no_citizen_terminated++; // to avoid print multiple times
+      log_citizen_done();
     }
+  }
+
+  for (int i = 0; i < novaccinators; ++i) {
+    log_vaccinator_done(i + 1, vaccinator_pids[i], vaccinator_doses[i]);
   }
 
   munmap(mem, memsize);
