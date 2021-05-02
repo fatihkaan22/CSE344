@@ -25,6 +25,12 @@ int memsize = 0;
 int *citizen_pids;
 int *vaccinator_doses;
 
+struct citizen {
+	int id;
+	int pid;
+	int novacc;
+};
+
 struct shared_memory {
   sem_t sem, empty, vaccines_available;
   int novacc1;
@@ -93,7 +99,7 @@ void log_inventory(int vacc1, int vacc2) {
 #ifdef DEBUG
   printf(C);
 #endif
-	printf("the clinic has %d vaccine1 and %d vaccine2\n", vacc1, vacc2);
+	printf("the clinic has %d vaccine1 and %d vaccine2. ", vacc1, vacc2);
 #ifdef DEBUG
   printf(T);
 #endif
@@ -103,7 +109,7 @@ void log_citizen(int id, int pid, int times) {
 #ifdef DEBUG
   printf(C);
 #endif
-  printf("Citizen %d (pid=%d) is vaccinated for the %d%s time: \n", id, pid,
+  printf("Citizen %d (pid=%d) is vaccinated for the %d%s time: ", id, pid,
          times, get_ordinal(times));
 	/* log_inventory(); */
 #ifdef DEBUG
@@ -245,7 +251,6 @@ int nurse(int id, int fd) {
 int vaccinator(int id, int nocitizens, int noshots,
                int c_pipes[nocitizens][2]) {
   int nodose = 0;
-  char msg = 'x'; // message to send from fifo
   // wait until both vaccinates are available
   while (mem->current_tour != noshots) {
     if (sem_wait(&mem->vaccines_available) == -1) {
@@ -262,6 +267,8 @@ int vaccinator(int id, int nocitizens, int noshots,
     // - remove vaccines from buffer
     // - select citizen to be vaccinated
     remove_vaccines();
+		int inv_vacc1 = mem->novacc1;
+		int inv_vacc2 = mem->novacc2;
     int citizen_idx = mem->next_citizen_idx;
     mem->next_citizen_idx++;
     if (mem->next_citizen_idx == nocitizens) {
@@ -279,9 +286,13 @@ int vaccinator(int id, int nocitizens, int noshots,
     }
 
     // invite citizen
-    write(c_pipes[citizen_idx][1], &msg, sizeof(char));
-    log_vaccinator(id, getpid(), citizen_idx); // TODO: citizen pid
+		struct citizen c;
+    read(c_pipes[citizen_idx][0], &c, sizeof(struct citizen));
+    log_vaccinator(id, getpid(), c.pid);
+    log_citizen(c.id, c.pid, c.novacc);
+		log_inventory(inv_vacc1, inv_vacc2);
     nodose++;
+
   }
 
   sem_post(&mem->vaccines_available);
@@ -294,11 +305,12 @@ int vaccinator(int id, int nocitizens, int noshots,
 }
 
 int citizen(int id, int noshots, int c_pipes[2]) {
-  char *m;
-
   for (int i = 0; i < noshots; ++i) {
-    read(c_pipes[0], &m, 1);
-    log_citizen(id, getpid(), i + 1);
+		struct citizen c;
+		c.pid = getpid();
+		c.id = id;
+		c.novacc = i+1;
+    write(c_pipes[1], &c, sizeof(struct citizen));
   }
 
 #ifdef DEBUG
@@ -417,11 +429,11 @@ int main(int argc, char *argv[]) {
       perror("fork");
       exit(EXIT_FAILURE);
     case 0:
-      close(c_pipes[i][1]); // TODO: err
+      close(c_pipes[i][0]); // TODO: err
       citizen(i + 1, noshots, c_pipes[i]);
       exit(EXIT_SUCCESS);
     default:
-      close(c_pipes[i][0]); // TODO: err
+      close(c_pipes[i][1]); // TODO: err
       citizen_pids[i] = c_pid;
     }
   }
