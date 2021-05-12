@@ -1,35 +1,41 @@
 #include "queue.h"
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-void init_queue(struct queue *d, int capacity) {
-	d->CAPACITY = capacity;
-	d->arr = malloc(sizeof(char) * d->CAPACITY);
-  d->front = d->rear = -1;
+void init_queue(struct queue *q, int capacity) {
+  q->CAPACITY = capacity;
+  q->arr = malloc(sizeof(char) * q->CAPACITY);
+  q->front = q->rear = -1;
 }
 
-void offer(struct queue *d, char item) {
-  if (d->rear == d->CAPACITY - 1)
-    printf("\nQueue is Full!!");
+void offer(struct queue *q, char item) {
+  if ((q->front == q->rear + 1) ||
+      (q->front == 0 && q->rear == q->CAPACITY - 1)) // full
+    printf("\n Queue is full!! \n");
   else {
-    if (d->front == -1)
-      d->front = 0;
-    d->rear++;
-    d->arr[d->rear] = item;
+    if (q->front == -1)
+      q->front = 0;
+    q->rear = (q->rear + 1) % q->CAPACITY;
+    q->arr[q->rear] = item;
   }
 }
 
-char poll(struct queue *d) {
-	char c = -1;
-  if (d->front == -1)
-    printf("\nQueue is Empty!!");
-  else {
-    c = d->arr[d->front];
-    d->front++;
-    if (d->front > d->rear)
-      d->front = d->rear = -1;
+char poll(struct queue *q) {
+  if (q->front == -1) { // empty
+    printf("\n Queue is empty !! \n");
+    return -1;
+  } else {
+    char item = q->arr[q->front];
+    if (q->front == q->rear) {
+      q->front = q->rear = -1;
+    }
+    // Q has only one element, so we reset the
+    // queue after dequeing it. ?
+    else {
+      q->front = (q->front + 1) % q->CAPACITY;
+    }
+    return item;
   }
-	return c;
 }
 
-void free_queue(struct queue *d) { free(d->arr); }
+void free_queue(struct queue *q) { free(q->arr); }
