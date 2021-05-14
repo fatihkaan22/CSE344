@@ -33,6 +33,7 @@ struct student_for_hire {
   int s;
   int c;
   sem_t available;
+  sem_t sem_busy;
   bool busy;
   int no_hw_solved;
 };
@@ -63,13 +64,14 @@ struct student_for_hire *get_first_available(struct student_for_hire *arr,
       return s;
     }
   }
-  fprintf(stderr, "Something wrong: 1"); // TODO:
+  fprintf(stderr, "==========================Something wrong: 1"); // TODO:
   // all busy
   // TODO: consider wait / post semaphore
   return NULL;
 }
 
 void *thread_h(void *filepath) {
+  pthread_detach(pthread_self());
   FILE *hwfile = fopen((char *)filepath, "r");
   char c;
   while ((c = fgetc(hwfile)) != EOF) {
@@ -96,19 +98,20 @@ void *thread_h(void *filepath) {
 
 void *thread_student_for_hire(void *args) {
   struct student_for_hire *s = (struct student_for_hire *)args;
-  s->no_hw_solved = 0;
 
   while (1) {
-    printf(R "%s waiting for a homework\n" T, s->name);
+    if(!terminate && !s->busy)
+      printf(R "%s waiting for a homework\n" T, s->name);
     sem_wait(&s->available);
     if (terminate)
       break;
-    s->no_hw_solved++;
     sleep(sleep_time(s->s));
-    sem_post(&student_available);
     // TODO: sem wait
+    sem_wait(&s->sem_busy);
     s->busy = false;
+    sem_post(&s->sem_busy);
     // TODO: sem post
+    sem_post(&student_available);
   }
 #ifdef DEBUG
   printf("%s end\n", s->name);
@@ -131,7 +134,7 @@ void sort_by(struct student_for_hire *students, int *res, int size,
         val_i = students[i].s;
         val_j = students[j].s;
         break;
-      case COST: // the higher the worst
+      case COST: // the higher the less priority
         val_i = students[j].c;
         val_j = students[i].c;
         break;
@@ -155,7 +158,7 @@ int main(int argc, char *argv[]) {
     usage();
     exit(EXIT_SUCCESS);
   }
-  const int queue_size = 3;
+  const int queue_size = 4;
   money = strtol(argv[3], NULL, 10);
   long initial_money = money;
   // TODO: check
@@ -164,13 +167,13 @@ int main(int argc, char *argv[]) {
   char *hwfilepath = argv[1];
   /* char *studentfilepath = malloc(256 * sizeof(char)); */
   /* strcpy(studentfilepath, argv[2]); */
-  /* sem_init(&sem_money, 1, 1); */
+  /* sem_init(&sem_money, 0, 1); */
 
   init_queue(&hws, queue_size);
   // TODO: check
-  sem_init(&queue_access, 1, 1);
-  sem_init(&queue_empty, 1, queue_size);
-  sem_init(&queue_full, 1, 0);
+  sem_init(&queue_access, 0, 1);
+  sem_init(&queue_empty, 0, queue_size);
+  sem_init(&queue_full, 0, 0);
   pthread_t h;
   if (pthread_create(&h, NULL, &thread_h, hwfilepath) != 0) { // hwfile
     perror("pthread_create()");
@@ -197,12 +200,14 @@ int main(int argc, char *argv[]) {
   }
   fclose(studentfile);
 
-  sem_init(&student_available, 1, nostudent);
+  sem_init(&student_available, 0, nostudent);
   // create all student threads
   pthread_t student_threads[nostudent];
   for (int i = 0; i < nostudent; ++i) {
+    sem_init(&students[i].sem_busy, 0, 1);
+    students[i].no_hw_solved = 0;
     students[i].busy = false;
-    sem_init(&students[i].available, 1,
+    sem_init(&students[i].available, 0,
              0); // student will wait on this semaphore
     if (pthread_create(&student_threads[i], NULL, &thread_student_for_hire,
                        &students[i]) != 0) {
@@ -220,8 +225,8 @@ int main(int argc, char *argv[]) {
 
   /* #ifdef DEBUG */
   /*   for (int i = 0; i < nostudent; ++i) { */
-  /*     printf("s%d: %s\n", i, students[by_speed[i]].name); */
-  /*     printf("q%d: %s\n", i, students[by_quality[i]].name); */
+  /*     printf("s%d: %s  ", i, students[by_speed[i]].name); */
+  /*     printf("q%d: %s  ", i, students[by_quality[i]].name); */
   /*     printf("c%d: %s\n", i, students[by_cost[i]].name); */
   /*   } */
   /* #endif */
@@ -256,13 +261,21 @@ int main(int argc, char *argv[]) {
         get_first_available(students, nostudent, by_priority);
     // notify student
     /* sem_wait(&sem_money); */
+    if (money < s->c) {
+      puts("H has no more money for homeworks, terminating.");
+      break;
+    }
     money -= s->c;
     /* sem_post(&sem_money); */
-    printf(R "%s is solving homework %c for %d. H has %ldTL left.\n" T, s->name,
-           hw, s->c, money);
+    printf(R "%s is solving homework %c for %d. H has %ldTL left.\n" T, s->name, hw, s->c, money);
+    s->no_hw_solved++;
+
     // TODO: sem wait
+    sem_wait(&s->sem_busy);
     s->busy = true;
+    sem_post(&s->sem_busy);
     // TODO: sem post
+
     sem_post(&s->available);
     total_hws++;
   }
@@ -273,7 +286,7 @@ int main(int argc, char *argv[]) {
     sem_post(&students[i].available);
   }
 
-  for (int i = 0; i < nostudent; ++i) {
+  for (int i = 0; i < nostudent-1; ++i) {
     pthread_join(student_threads[i], NULL);
   }
 
@@ -283,13 +296,18 @@ int main(int argc, char *argv[]) {
   /* } */
 
   puts("Homeworks sovled and money made by the students:");
+  int sum = 0;
+  int hwsum = 0;
   for (int i = 0; i < nostudent; ++i) {
     printf("%s %d %d\n", students[i].name, students[i].no_hw_solved,
            students[i].no_hw_solved * students[i].c);
+    sum += students[i].c * students[i].no_hw_solved;
+    hwsum += students[i].no_hw_solved;
   }
 
   printf("Total cost for %d homeworks %ldTL.\n", total_hws,
          initial_money - money);
+  printf("Total cost for %d homeworks %dTL.\n", hwsum, sum);
   printf("Money left at H's account: %ldTL.\n", money);
   return 0;
 }
