@@ -15,7 +15,11 @@
 #define Y "\x1B[33m"
 #define T "\x1B[0m"
 
+// constants
 #define NO_HW_LEFT 'N'
+#define MAX_STUDENT 64
+#define MAX_LINE_LEN 128
+#define QUEUE_SIZE 4
 
 long money;
 struct queue hws;
@@ -64,9 +68,11 @@ struct student_for_hire *get_first_available(struct student_for_hire *arr,
       return s;
     }
   }
-  fprintf(stderr, "==========================Something wrong: 1"); // TODO:
   // all busy
-  // TODO: consider wait / post semaphore
+  // sanity check
+  fprintf(stderr, "Something went wrong: waiting on semaphore "
+                  "'student_available' doesn't work.");
+  exit(EXIT_FAILURE);
   return NULL;
 }
 
@@ -77,12 +83,12 @@ void *thread_h(void *filepath) {
   while ((c = fgetc(hwfile)) != EOF) {
     if (c != 'C' && c != 'S' && c != 'Q')
       break;
-    printf("H has new homework %c; remaining money is %ld\n", c, money);
     sem_wait(&queue_empty);
     sem_wait(&queue_access);
     offer(&hws, c);
     sem_post(&queue_access);
     sem_post(&queue_full);
+    printf("H has new homework %c; remaining money is %ld\n", c, money);
   }
 
   // notify no homeworks left
@@ -100,17 +106,15 @@ void *thread_student_for_hire(void *args) {
   struct student_for_hire *s = (struct student_for_hire *)args;
 
   while (1) {
-    if(!terminate && !s->busy)
+    if (!terminate && !s->busy)
       printf(R "%s waiting for a homework\n" T, s->name);
     sem_wait(&s->available);
     if (terminate)
       break;
     sleep(sleep_time(s->s));
-    // TODO: sem wait
     sem_wait(&s->sem_busy);
     s->busy = false;
     sem_post(&s->sem_busy);
-    // TODO: sem post
     sem_post(&student_available);
   }
 #ifdef DEBUG
@@ -158,17 +162,10 @@ int main(int argc, char *argv[]) {
     usage();
     exit(EXIT_SUCCESS);
   }
-  const int queue_size = 4;
-  money = strtol(argv[3], NULL, 10);
+  const int queue_size = QUEUE_SIZE;
+  money = strtol(argv[3], NULL, 10); // TODO: check return
   long initial_money = money;
-  // TODO: check
-  /* char *hwfilepath = malloc(256 * sizeof(char)); */
-  /* strcpy(hwfilepath, argv[1]); */
   char *hwfilepath = argv[1];
-  /* char *studentfilepath = malloc(256 * sizeof(char)); */
-  /* strcpy(studentfilepath, argv[2]); */
-  /* sem_init(&sem_money, 0, 1); */
-
   init_queue(&hws, queue_size);
   // TODO: check
   sem_init(&queue_access, 0, 1);
@@ -182,8 +179,8 @@ int main(int argc, char *argv[]) {
 
   FILE *studentfile = fopen(argv[2], "r");
 
-  char line[128];
-  struct student_for_hire students[64]; // TODO:
+  char line[MAX_LINE_LEN]; // max length of one line
+  struct student_for_hire students[MAX_STUDENT]; // 
   int nostudent = 0;
 
   // read from file
@@ -198,7 +195,7 @@ int main(int argc, char *argv[]) {
     s.c = strtol(end, &end, 10);
     students[nostudent++] = s;
   }
-  fclose(studentfile);
+  fclose(studentfile); // TODO: return val check
 
   sem_init(&student_available, 0, nostudent);
   // create all student threads
@@ -267,7 +264,8 @@ int main(int argc, char *argv[]) {
     }
     money -= s->c;
     /* sem_post(&sem_money); */
-    printf(R "%s is solving homework %c for %d. H has %ldTL left.\n" T, s->name, hw, s->c, money);
+    printf(R "%s is solving homework %c for %d. H has %ldTL left.\n" T, s->name,
+           hw, s->c, money);
     s->no_hw_solved++;
 
     // TODO: sem wait
@@ -286,7 +284,7 @@ int main(int argc, char *argv[]) {
     sem_post(&students[i].available);
   }
 
-  for (int i = 0; i < nostudent-1; ++i) {
+  for (int i = 0; i < nostudent - 1; ++i) {
     pthread_join(student_threads[i], NULL);
   }
 
