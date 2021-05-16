@@ -1,7 +1,7 @@
 CC = gcc
 # CFLAGS = -pedantic-errors -Wall -std=gnu99 -g -lrt -lpthread
 CFLAGS = -pedantic-errors -Wall -std=gnu99 -g -lpthread
-CFLAGS += -DDEBUG
+# CFLAGS += -DDEBUG
 
 SRCS := main.c queue.c queue.h
 

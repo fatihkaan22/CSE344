@@ -1,0 +1,156 @@
+#+TITLE: CSE344 - System Programming - Midterm
+
+#+OPTIONS: num:nil
+#+SETUPFILE: /home/near/opt/template-nodate.org
+#+LATEX_HEADER: \usepackage[margin=1in]{geometry}
+#+LaTeX_CLASS_OPTIONS: [a4paper]
+#+LATEX_HEADER: \usepackage{minted}
+#+LATEX_HEADER: \definecolor{bg}{rgb}{0.95,0.95,0.95}
+#+LATEX_HEADER: \newminted{c}{frame=single}
+
+# #+ATTR_LATEX: :font \ttfamily{}
+
+* Design Explanation
+
+  In main function;
+  1. Queue semaphores are initialized.
+  2. Thread H is created.
+  3. All students-for-hire are read from file into a struct array, and student threads are created.
+  4. Students are sorted (3 different order).
+  5. Main loop that handles assigning homeworks to students, decrementing money, keep count of homeworks solved and repeat.
+
+-----
+
+- Constants are defined with =#define= directives.
+
+** Synchronization
+   
+*** Queue 
+ - =queue_access=: access to the queue with =offer= and =poll= opeartions are restricted with semaphore.
+ - =queue_full=, =queue_empty=: wait when queue full or empty.
+
+*** Main thread and Student threads
+   Student thread must wait for main thread to notify to call =sleep()=. This is ensured by using semaphore per student thread. All students are going to wait on their =sem_t available= semaphore. When main thread decides to give the homework, it will notify the thread by posting the semaphore.
+
+   However main thread shouldn't post the semaphore if all threads are busy. To ensure this =student_available= semaphore is used. Loop in the main thread is going to wait on this semaphore if all students are busy. And the students will post it when they finish sleeping.
+
+   To get first available student (by the priority), their state needs to be checked in main thread. In order to check the state of the students, busy flag is used for each student. Normally this flag will not be concurently modified however while modifying its value the other thread might read it. Since we shouldn't presume that the operation is atomic, this can result in undefined behaviour. Therefore =busy= flag needs to be protected. =sem_busy= semaphore is used for this purpose.
+
+   \newpage
+   
+** Priority of Students      
+   3 arrays are used to store sorted indices of the student array, according to students' cost, speed or quality.
+
+#+begin_export latex
+\begin{ccode}[fontsize=\small,frame=single,framesep=3mm]{text}
+// sorted arrays
+int by_speed[nostudent], by_quality[nostudent], by_cost[nostudent];
+
+sort_by(students, by_speed, nostudent, SPEED);
+sort_by(students, by_quality, nostudent, QUALITY);
+sort_by(students, by_cost, nostudent, COST);
+\end{ccode}
+#+end_export
+
+We cannot swap elements, because the other arrays are going to be sorted by relative to students array. The sort algorithm works in a way that after every iteration the correct position of the element is found. This depends on number of smaller elements comapre to element to be sorted. But what if there are two or more students with the same priority? This would result in incorrect order. To solve this, arrays are initialized with =-1=, and students with same priority is placed to next index if the index is not available.
+
+
+** Termination
+   
+   - If there is not enough money the loop breaks. And sets the global variable =terminate= to let other threads to know.
+   - If the homeworks are finished, then the =thread_h=, is going to put a termination character to the queue instead of one of the =C=, =S=, =Q= letters. Thus, main thread get notified in order to break the main loop.
+   - Last but not least, the main thread will wait thread h to terminate by waiting on =thread_h_term= semaphore.
+  
+*** Handling SIGINT 
+    In case of receiving =SIGINT=, handler function is sets the global variable =gotSigint=. The main loop checks the  variable on every iteration, and if it is set the loop breaks.
+
+** Running & Test Cases
+
+Program tested with different cases and also with the valgrind to check memory leaks. According the output of the valgrind, "All heap blocks were freed -- no leaks are possible".
+
+#+begin_export latex
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --verbose \
+         --log-file=valgrind-out.txt \
+         ...
+\end{minted}
+#+end_export
+
+\newpage
+
+(with queue size of 4)
+
+#+begin_export latex
+\begin{minted}[breaklines,fontsize=\footnotesize,frame=single,framesep=3mm]{text}
+./program ./homework ./students 10000
+\end{minted}
+#+end_export
+
+#+begin_export latex
+\begin{minted}[breaklines,fontsize=\footnotesize,frame=single,framesep=3mm]{text}
+H has new homework C; remaining money is 10000
+H has new homework S; remaining money is 10000
+H has new homework Q; remaining money is 10000
+H has new homework C; remaining money is 10000
+odtulu waiting for a homework
+bogazicili waiting for a homework
+ytulu waiting for a homework
+itulu waiting for a homework
+sakaryali waiting for a homework
+5 students-for-hire threads have been created.
+Name Q S C
+odtulu 5 3 900
+bogazicili 4 5 1000
+itulu 4 4 800
+ytulu 3 4 650
+sakaryali 1 2 150
+sakaryali is solving homework C for 150. H has 9850TL left.
+bogazicili is solving homework S for 1000. H has 8850TL left.
+odtulu is solving homework Q for 900. H has 7950TL left.
+H has new homework S; remaining money is 7950
+H has new homework Q; remaining money is 7300
+H has new homework C; remaining money is 7300
+H has new homework S; remaining money is 7300
+ytulu is solving homework C for 650. H has 7300TL left.
+itulu is solving homework S for 800. H has 6500TL left.
+H has new homework Q; remaining money is 6500
+H has new homework C; remaining money is 6500
+bogazicili waiting for a homework
+bogazicili is solving homework Q for 1000. H has 5500TL left.
+H has new homework S; remaining money is 5500
+itulu waiting for a homework
+ytulu waiting for a homework
+ytulu is solving homework C for 650. H has 4850TL left.
+bogazicili waiting for a homework
+bogazicili is solving homework S for 1000. H has 3850TL left.
+itulu is solving homework Q for 800. H has 3050TL left.
+H has new homework C; remaining money is 3850
+H has new homework Q; remaining money is 3050
+H has new homework S; remaining money is 3050
+odtulu waiting for a homework
+odtulu is solving homework C for 900. H has 2150TL left.
+H has new homework C; remaining money is 2150
+bogazicili waiting for a homework
+bogazicili is solving homework S for 1000. H has 1150TL left.
+H has new homework S; remaining money is 1150
+sakaryali waiting for a homework
+sakaryali is solving homework C for 150. H has 1000TL left.
+H has new homework S; remaining money is 1000
+ytulu waiting for a homework
+ytulu is solving homework Q for 650. H has 350TL left.
+H has no more money for homeworks, terminating.
+itulu waiting for a homework
+Homeworks sovled and money made by the students:
+odtulu 2 1800
+bogazicili 4 4000
+itulu 2 1600
+ytulu 3 1950
+sakaryali 2 300
+Total cost for 13 homeworks 9650TL.
+Total cost for 13 homeworks 9650TL.
+Money left at H's account: 350TL.
+\end{minted}
+#+end_export

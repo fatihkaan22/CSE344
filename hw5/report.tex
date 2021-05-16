@@ -1,0 +1,194 @@
+% Created 2021-05-15 Sat 14:51
+% Intended LaTeX compiler: pdflatex
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{grffile}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{textcomp}
+\usepackage{amssymb}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\documentclass{article}
+\usepackage{here}
+\usepackage{xcolor}
+\usepackage[margin=3.0cm]{geometry}
+\usepackage{amsmath}
+\usepackage{parskip}
+\renewcommand\arraystretch{1.4}
+\usepackage[margin=1in]{geometry}
+\usepackage{minted}
+\definecolor{bg}{rgb}{0.95,0.95,0.95}
+\newminted{c}{frame=single}
+\author{Fatih Kaan Salgır - 171044009}
+\date{}
+\title{CSE344 - System Programming - Midterm}
+\hypersetup{
+ pdfauthor={Fatih Kaan Salgır - 171044009},
+ pdftitle={CSE344 - System Programming - Midterm},
+ pdfkeywords={},
+ pdfsubject={},
+ pdfcreator={Emacs 27.2 (Org mode 9.4.5)}, 
+ pdflang={English}}
+\begin{document}
+
+\maketitle
+
+\section*{Design Explanation}
+\label{sec:org6a465cb}
+
+In main function;
+\begin{enumerate}
+\item Queue semaphores are initialized.
+\item Thread H is created.
+\item All students-for-hire are read from file into a struct array, and student threads are created.
+\item Students are sorted (3 different order).
+\item Main loop that handles assigning homeworks to students, decrementing money, keep count of homeworks solved and repeat.
+\end{enumerate}
+
+\noindent\rule{\textwidth}{0.5pt}
+
+\begin{itemize}
+\item Constants are defined with \texttt{\#define} directives.
+\end{itemize}
+
+\subsection*{Synchronization}
+\label{sec:org2848a26}
+
+\subsubsection*{Queue}
+\label{sec:org4d7b2c7}
+\begin{itemize}
+\item \texttt{queue\_access}: access to the queue with \texttt{offer} and \texttt{poll} opeartions are restricted with semaphore.
+\item \texttt{queue\_full}, \texttt{queue\_empty}: wait when queue full or empty.
+\end{itemize}
+
+\subsubsection*{Main thread and Student threads}
+\label{sec:orgbf0ad67}
+Student thread must wait for main thread to notify to call \texttt{sleep()}. This is ensured by using semaphore per student thread. All students are going to wait on their \texttt{sem\_t available} semaphore. When main thread decides to give the homework, it will notify the thread by posting the semaphore.
+
+However main thread shouldn't post the semaphore if all threads are busy. To ensure this \texttt{student\_available} semaphore is used. Loop in the main thread is going to wait on this semaphore if all students are busy. And the students will post it when they finish sleeping.
+
+To get first available student (by the priority), their state needs to be checked in main thread. In order to check the state of the students, busy flag is used for each student. Normally this flag will not be concurently modified however while modifying its value the other thread might read it. Since we shouldn't presume that the operation is atomic, this can result in undefined behaviour. Therefore \texttt{busy} flag needs to be protected. \texttt{sem\_busy} semaphore is used for this purpose.
+
+\newpage
+
+\subsection*{Priority of Students}
+\label{sec:org2274fbf}
+3 arrays are used to store sorted indices of the student array, according to students' cost, speed or quality.
+
+\begin{ccode}[fontsize=\small,frame=single,framesep=3mm]{text}
+// sorted arrays
+int by_speed[nostudent], by_quality[nostudent], by_cost[nostudent];
+
+sort_by(students, by_speed, nostudent, SPEED);
+sort_by(students, by_quality, nostudent, QUALITY);
+sort_by(students, by_cost, nostudent, COST);
+\end{ccode}
+
+We cannot swap elements, because the other arrays are going to be sorted by relative to students array. The sort algorithm works in a way that after every iteration the correct position of the element is found. This depends on number of smaller elements comapre to element to be sorted. But what if there are two or more students with the same priority? This would result in incorrect order. To solve this, arrays are initialized with \texttt{-1}, and students with same priority is placed to next index if the index is not available.
+
+
+\subsection*{Termination}
+\label{sec:org654fcd8}
+
+\begin{itemize}
+\item If there is not enough money the loop breaks. And sets the global variable \texttt{terminate} to let other threads to know.
+\item If the homeworks are finished, then the \texttt{thread\_h}, is going to put a termination character to the queue instead of one of the \texttt{C}, \texttt{S}, \texttt{Q} letters. Thus, main thread get notified in order to break the main loop.
+\item Last but not least, the main thread will wait thread h to terminate by waiting on \texttt{thread\_h\_term} semaphore.
+\end{itemize}
+
+\subsubsection*{Handling SIGINT}
+\label{sec:org6dac091}
+In case of receiving \texttt{SIGINT}, handler function is sets the global variable \texttt{gotSigint}. The main loop checks the  variable on every iteration, and if it is set the loop breaks.
+
+\subsection*{Running \& Test Cases}
+\label{sec:org801a065}
+
+Program tested with different cases and also with the valgrind to check memory leaks. According the output of the valgrind, "All heap blocks were freed -- no leaks are possible".
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --verbose \
+         --log-file=valgrind-out.txt \
+         ...
+\end{minted}
+
+\newpage
+
+(with queue size of 4)
+
+\begin{minted}[breaklines,fontsize=\footnotesize,frame=single,framesep=3mm]{text}
+./program ./homework ./students 10000
+\end{minted}
+
+\begin{minted}[breaklines,fontsize=\footnotesize,frame=single,framesep=3mm]{text}
+H has new homework C; remaining money is 10000
+H has new homework S; remaining money is 10000
+H has new homework Q; remaining money is 10000
+H has new homework C; remaining money is 10000
+odtulu waiting for a homework
+bogazicili waiting for a homework
+ytulu waiting for a homework
+itulu waiting for a homework
+sakaryali waiting for a homework
+5 students-for-hire threads have been created.
+Name Q S C
+odtulu 5 3 900
+bogazicili 4 5 1000
+itulu 4 4 800
+ytulu 3 4 650
+sakaryali 1 2 150
+sakaryali is solving homework C for 150. H has 9850TL left.
+bogazicili is solving homework S for 1000. H has 8850TL left.
+odtulu is solving homework Q for 900. H has 7950TL left.
+H has new homework S; remaining money is 7950
+H has new homework Q; remaining money is 7300
+H has new homework C; remaining money is 7300
+H has new homework S; remaining money is 7300
+ytulu is solving homework C for 650. H has 7300TL left.
+itulu is solving homework S for 800. H has 6500TL left.
+H has new homework Q; remaining money is 6500
+H has new homework C; remaining money is 6500
+bogazicili waiting for a homework
+bogazicili is solving homework Q for 1000. H has 5500TL left.
+H has new homework S; remaining money is 5500
+itulu waiting for a homework
+ytulu waiting for a homework
+ytulu is solving homework C for 650. H has 4850TL left.
+bogazicili waiting for a homework
+bogazicili is solving homework S for 1000. H has 3850TL left.
+itulu is solving homework Q for 800. H has 3050TL left.
+H has new homework C; remaining money is 3850
+H has new homework Q; remaining money is 3050
+H has new homework S; remaining money is 3050
+odtulu waiting for a homework
+odtulu is solving homework C for 900. H has 2150TL left.
+H has new homework C; remaining money is 2150
+bogazicili waiting for a homework
+bogazicili is solving homework S for 1000. H has 1150TL left.
+H has new homework S; remaining money is 1150
+sakaryali waiting for a homework
+sakaryali is solving homework C for 150. H has 1000TL left.
+H has new homework S; remaining money is 1000
+ytulu waiting for a homework
+ytulu is solving homework Q for 650. H has 350TL left.
+H has no more money for homeworks, terminating.
+itulu waiting for a homework
+Homeworks sovled and money made by the students:
+odtulu 2 1800
+bogazicili 4 4000
+itulu 2 1600
+ytulu 3 1950
+sakaryali 2 300
+Total cost for 13 homeworks 9650TL.
+Total cost for 13 homeworks 9650TL.
+Money left at H's account: 350TL.
+\end{minted}
+\end{document}
