@@ -37,7 +37,16 @@ char *csv_tokenizer(char *str, char **rest) {
     *rest = str;
     return NULL;
   }
-  char *end = str + strcspn(str, DELIM);
+  int next_delim = strcspn(str, DELIM);
+  int next_close_dquote;
+  if (*str == '\"') { // to escape DELIMs in double quotes
+    next_close_dquote = strcspn(str + 1, "\"");
+    if (next_close_dquote > next_delim) {
+      next_close_dquote++;
+      next_delim = next_close_dquote + strcspn(str + next_close_dquote, DELIM);
+    }
+  }
+  char *end = str + next_delim;
   if (*end == '\0') {
     if (*(end - 1) == '\n')
       *(end - 1) = 0;
@@ -94,12 +103,10 @@ void read_csv(FILE *fp) {
       }
       ++local_cols;
     }
-
-    print_row(r);
     table.records[table.size] = r;
     /* printf("%d %d\n", local_cols, table.no_cols); */
     if (local_cols != table.no_cols) {
-      fprintf(stderr,
+      fprintf(stdout, // FIXME: stderr
               "ERROR: Number of columns in line %ld is different than in the "
               "header's\n",
               table.size + 1); // size + 1 is the current line
@@ -107,10 +114,6 @@ void read_csv(FILE *fp) {
     table.size++;
   }
 
-  /* print_row(table.header); */
-  /* for (size_t i = 0; i < table.no_cols; ++i) { */
-  /*   print_row(table.records[i]); */
-  /* } */
 }
 
 int main(int argc, char *argv[]) {
@@ -124,7 +127,16 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Cannot open file");
     exit(EXIT_FAILURE);
   }
-  read_csv(fp);
+  /* read_csv(fp); */
+
+  /* // print table */
+  /* print_row(table.header); */
+  /* for (size_t i = 0; i < table.size; ++i) { */
+  /*   print_row(table.records[i]); */
+  /* } */
+
+
+
 
   return 0;
 }
