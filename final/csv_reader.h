@@ -1,8 +1,8 @@
 #ifndef CSV_READER_H
 #define CSV_READER_H
 
-#include <stdio.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #define DELIM ","
 
@@ -19,5 +19,7 @@ extern struct sql_table table;
 
 void read_csv(FILE *fp);
 char *csv_tokenizer(char *str, char **rest);
+void print_row(record r, bool include[]);
+void print_table(char **columns, int rows[], int rows_size);
 
 #endif /* end of include guard: CSV_READER_H */

@@ -86,3 +86,38 @@ char *csv_tokenizer(char *str, char **rest) {
   *rest = end + 1;
   return str;
 }
+
+void print_row(record r, bool include[]) {
+  bool nl = false;
+  for (size_t i = 0; i < table.no_cols; ++i) {
+    if (include == NULL || include[i]) {
+      printf("%s | ", r[i]);
+      nl = true;
+    }
+  }
+  if (nl)
+    puts("");
+}
+
+void print_table(char **columns, int rows[], int rows_size) {
+  if (rows_size == 0)
+    return;
+  bool include[table.no_cols];
+  if (columns[0] == NULL || *columns[0] == '*') {
+    memset(&include, 1, sizeof(include));
+  } else {
+    memset(&include, 0, sizeof(include));
+    for (size_t i = 0; columns[i]; ++i) {
+      for (size_t j = 0; j < table.no_cols; ++j) {
+        if (strcmp(columns[i], table.header[j]) == 0) {
+          include[j] = true;
+        }
+      }
+    }
+  }
+
+  print_row(table.header, include);
+  for (int i = 0; i < rows_size; ++i) {
+    print_row(table.records[rows[i]], include);
+  }
+}
