@@ -4,10 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum sql_command { UNKNOWN = 0, SELECT, SELECT_DISTINCT, UPDATE };
-enum sql_keywords { WHERE, FROM };
+#include "csv_reader.h"
 
-#define DELIM ","
+enum sql_command { UNKNOWN = 0, SELECT, SELECT_DISTINCT, UPDATE };
 
 #define SET_IDX(idx, func)                                                     \
   {                                                                            \
@@ -24,21 +23,10 @@ enum sql_keywords { WHERE, FROM };
 #define Y "\x1B[33m"
 #define T "\x1B[0m"
 
-typedef char **record;
-
-struct sql_table {
-  size_t size;
-  record header;
-  record *records;
-  size_t no_cols;
-};
-
 typedef struct pair {
   char *key;
   char *value;
 } pair;
-
-struct sql_table table;
 
 typedef struct query {
   enum sql_command cmd;
@@ -48,97 +36,7 @@ typedef struct query {
   pair column_filter[128];
 } query;
 
-char *csv_tokenizer(char *str, char **rest) {
-  if (str == NULL) {
-    str = *rest;
-  }
-  if (*str == '\n') {
-    *str = '\0';
-    return str;
-  }
-  if (*str == '\0') {
-    *rest = str;
-    return NULL;
-  }
-  int next_delim = strcspn(str, DELIM);
-  int next_close_dquote;
-  if (*str == '\"') { // to escape DELIMs in double quotes
-    next_close_dquote = strcspn(str + 1, "\"");
-    if (next_close_dquote > next_delim) {
-      next_close_dquote++;
-      next_delim = next_close_dquote + strcspn(str + next_close_dquote, DELIM);
-    }
-  }
-  char *end = str + next_delim;
-  if (*end == '\0') {
-    if (*(end - 1) == '\n')
-      *(end - 1) = 0;
-    *rest = end;
-    return str;
-  }
-  *end = '\0';
-  *rest = end + 1;
-  return str;
-}
-
-void print_row(record r) {
-  for (size_t i = 0; i < table.no_cols; ++i) {
-    printf("%s | ", r[i]);
-  }
-  puts("");
-}
-
 bool query_end(char *s) { return (*s == ';'); }
-
-void read_csv(FILE *fp) {
-
-  char buf[1024]; // TODO: read in parts
-
-  table.header = (record)malloc(16 * sizeof(char *)); // TODO:
-
-  if (fgets(buf, sizeof(buf), fp) == NULL) {
-    fprintf(stderr, "fgets error\n");
-  }
-  buf[strcspn(buf, "\n")] = 0;    // remove trailing \n
-  buf[strcspn(buf, "\r")] = '\n'; // remove trailing \r
-  char *token;
-  char *rest = buf;
-  table.no_cols = 0;
-  while ((token = csv_tokenizer(rest, &rest))) {
-    table.header[table.no_cols] = malloc(strlen(token) + 1);
-    strcpy(table.header[table.no_cols], token);
-    ++table.no_cols;
-  }
-
-  table.size = 0;
-  table.records = (record *)malloc(256 * sizeof(record));
-  while (fgets(buf, sizeof(buf), fp)) {
-    buf[strcspn(buf, "\n")] = '\0'; // remove trailing \n
-    buf[strcspn(buf, "\r")] = '\n'; // remove trailing \r
-    int local_cols = 0;
-    record r;
-    r = (record)malloc(16 * sizeof(char *)); // TODO:
-    rest = buf;
-    while ((token = csv_tokenizer(rest, &rest))) {
-      if (*token == 0) {
-        r[local_cols] = NULL;
-      } else {
-        r[local_cols] = malloc(strlen(token) + 1);
-        strcpy(r[local_cols], token);
-      }
-      ++local_cols;
-    }
-    table.records[table.size] = r;
-    /* printf("%d %d\n", local_cols, table.no_cols); */
-    if (local_cols != table.no_cols) {
-      fprintf(stdout, // FIXME: stderr
-              "ERROR: Number of columns in line %ld is different than in the "
-              "header's\n",
-              table.size + 1); // size + 1 is the current line
-    }
-    table.size++;
-  }
-}
 
 // check string equality
 bool streq(char *s1, char *s2) {
@@ -315,13 +213,66 @@ int parse_query(char *query_str, query *q) {
 }
 
 int col_idx(char *str) {
+  if (!str) {
+    fprintf(stderr, "ERROR:  null string\n");
+    return -1;
+  }
+
   for (size_t i = 0; i < table.no_cols; ++i) {
     if (strcmp(table.header[i], str) == 0) {
       return i;
     }
   }
-  fprintf(stderr, "ERROR: not in header\n");
+  fprintf(stderr, "ERROR: Not in header\n");
   return -1;
+}
+
+// checks if given set of entities are actually matches with the header
+bool match_header_str(char **cols) {
+  for (int i = 0; cols[i] != NULL; ++i) {
+    if (col_idx(cols[i]) == -1) {
+      fprintf(stderr, "ERROR: Not a valid query, error parsing: %s\n", cols[i]);
+      return false;
+    }
+  }
+  return true;
+}
+
+// checks if given set of key set are actually matches with the header
+bool match_header_pair(pair *cols) {
+  for (int i = 0; cols[i].key != NULL; ++i) {
+    if (col_idx(cols[i].key) == -1) {
+      fprintf(stderr, "ERROR: Not a valid query, error parsing: %s\n",
+              cols[i].key);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool valid_query(query q) {
+  if (!match_header_str(q.columns))
+    return false;
+  if (!match_header_pair(q.column_filter))
+    return false;
+  if (!match_header_pair(q.column_set))
+    return false;
+  return true;
+  for (int i = 0; q.column_filter[i].key; ++i) {
+    if (col_idx(q.column_filter[i].key) == -1) {
+      fprintf(stderr, "ERROR: Not a valid query, error parsing: %s\n",
+              q.column_filter[i].key);
+      return false;
+    }
+  }
+  for (int i = 0; q.column_set[i].key; ++i) {
+    if (col_idx(q.column_set[i].key) == -1) {
+      fprintf(stderr, "ERROR: Not a valid query, error parsing: %s\n",
+              q.column_set[i].key);
+      return false;
+    }
+  }
+  return true;
 }
 
 bool record_match(int row, pair *column_filter) {
@@ -330,37 +281,91 @@ bool record_match(int row, pair *column_filter) {
     int col = col_idx(column_filter[i].key);
     if (col == -1)
       return false;
-    if (table.records[row][col] &&
-        strcmp(table.records[row][col], column_filter[i].value) != 0)
+    if (table.records[row][col] == NULL)
+      return false;
+    if (strcmp(table.records[row][col], column_filter[i].value) != 0)
       return false;
   }
   return true;
 }
 
+void print_row(record r, bool include[]) {
+  bool nl = false;
+  for (size_t i = 0; i < table.no_cols; ++i) {
+    if (include == NULL || include[i]) {
+      printf("%s | ", r[i]);
+      nl = true;
+    }
+  }
+  if (nl)
+    puts("");
+}
+
+void print_table(char **columns, int rows[], int rows_size) {
+  if (rows_size == 0)
+    return;
+  bool include[table.no_cols];
+  if (columns[0] == NULL || *columns[0] == '*') {
+    memset(&include, 1, sizeof(include));
+  } else {
+    memset(&include, 0, sizeof(include));
+    for (size_t i = 0; columns[i]; ++i) {
+      for (size_t j = 0; j < table.no_cols; ++j) {
+        if (strcmp(columns[i], table.header[j]) == 0) {
+          include[j] = true;
+        }
+      }
+    }
+  }
+
+  print_row(table.header, include);
+  for (int i = 0; i < rows_size; ++i) {
+    print_row(table.records[rows[i]], include);
+  }
+}
+
+int record_set(int idx, pair* column_set) {
+  for (int i = 0; column_set[i].key; ++i) {
+    int c = col_idx(column_set[i].key);
+    char* deleted = table.records[idx][c];
+    table.records[idx][c] = column_set[i].value;
+    free(deleted);
+  }
+  return 0;
+}
+
 int run_query(query q) {
+  if (!valid_query(q))
+    return -1;
+  int result_record[table.size + 1]; // TODO:
+  size_t res_size = 0;
   switch (q.cmd) {
   case SELECT: {
-    int result_record[512]; // TODO:
-    int res_size = 0;
-
     for (size_t i = 0; i < table.size; ++i) {
       if (record_match(i, q.column_filter)) {
         result_record[res_size++] = i;
       }
     }
-    for (int i = 0; i < res_size; ++i) {
-      print_row(table.records[result_record[i]]);
-    }
-
     break;
   }
   case UPDATE:
+    for (size_t i = 0; i < table.size; ++i) {
+      if (record_match(i, q.column_filter)) {
+        result_record[res_size++] = i;
+      }
+    }
+    for (size_t i = 0; i < res_size; ++i) {
+      record_set(result_record[i], q.column_set);
+    }
     break;
   case SELECT_DISTINCT:
     break;
   default:
     puts("ERROR"); // TODO:
   }
+
+  print_table(q.columns, result_record, res_size);
+
   return 0;
 }
 
@@ -378,19 +383,19 @@ int main(int argc, char *argv[]) {
   read_csv(fp);
 
   // print table
-  print_row(table.header);
-  for (size_t i = 0; i < table.size; ++i) {
-    print_row(table.records[i]);
-  }
+  /* print_row(table.header); */
+  /* for (size_t i = 0; i < table.size; ++i) { */
+  /*   print_row(table.records[i]); */
+  /* } */
 
   char *cmd;
 
-  /* cmd = "SELECT * FROM TABLE;"; */
-  cmd = "SELECT * FROM TABLE WHERE Series_reference='BDCQ.SEA1AA';";
+  cmd = "SELECT Period, Magnitude FROM TABLE WHERE "
+        "Series_reference='BDCQ.SEA1AA';";
+  /* cmd = "SELECT * FROM TABLE WHERE " */
+  /*       "STATUS='F',Series_reference='BDCQ.SEA1AA',Period='2020.12';"; */
   /* cmd = "SELECT columnName1, columnName2, columnName3 FROM TABLE;"; */
-  /* cmd = "UPDATE TABLE SET columnName1='value1', columnName2='value2' WHERE "
-   */
-  /*       "columnName='valueX';"; */
+  cmd = "UPDATE TABLE SET Period='-1' WHERE Series_reference='BDCQ.SEA1AA';";
   /* cmd = "UPDATE TABLE SET columnName1='value1';"; */
   /* cmd = "SELECT DISTINCT columnName1,columnName2 FROM TABLE;"; */
 
@@ -405,7 +410,9 @@ int main(int argc, char *argv[]) {
 
   print_query(q);
 
-  run_query(q);
+  if (run_query(q) == -1) {
+    fprintf(stderr, "Error while running query: '%s'\n", cmd);
+  }
 
   return 0;
 }
