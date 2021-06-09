@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,14 @@
 
 #include "socket_io.h"
 
-#define BUF_SIZE 1024
+#define BUF_SIZE 4096
+
+static volatile sig_atomic_t got_sigint = 0;
+
+static void handler(int sig) {
+  if (sig == SIGINT)
+    got_sigint = 1;
+}
 
 void usage() {
   printf(
@@ -70,6 +78,15 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  struct sigaction sa;
+  /* memset(&sa, 0, sizeof(sa)); */
+  sa.sa_handler = &handler;
+  sa.sa_flags = 0;
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(SIGINT, &sa, NULL) == -1) {
+    perror("sigaction()");
+  }
+
   FILE *fp = fopen(queryfile_path, "r");
   if (fp == NULL) {
     fprintf(stderr, "Cannot open file");
@@ -96,19 +113,23 @@ int main(int argc, char *argv[]) {
 
   int i = 0;
   while (fgets(query, sizeof(respond), fp)) {
+    if (got_sigint)
+      break;
     query[strcspn(query, "\n")] = 0; // remove trailing \n
     send_line(query, strlen(query) + 1, sock);
     // first read gets the how many records are there
     int no_records;
     receive_int(&no_records, sock);
-    printf("%d\n", no_records);
+    /* printf("%d\n", no_records); */
     for (int j = 0; j < no_records + 1; ++j) { // number of records + header
-      if(receive_line(respond, sock) == -1) {
+      if (receive_line(respond, sock) == -1) {
         fprintf(stderr, "ERROR: couldn't receive_line\n");
       }
-      printf("%s\n", respond);
+      printf("%s", respond);
     }
     ++i;
   }
+
+  fclose(fp);
   return 0;
 }

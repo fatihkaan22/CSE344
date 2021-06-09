@@ -10,7 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "csv_reader.h"
@@ -23,6 +25,10 @@
 #define G "\x1B[32m"
 #define Y "\x1B[33m"
 #define T "\x1B[0m"
+
+#define PIDFILE "/tmp/cse344-171044009.pid"
+#define BD_MAX_CLOSE 8192
+#define SLEEP 500000
 
 struct thread_pool {
   pthread_t *threads;
@@ -43,6 +49,13 @@ unsigned int no_busy;
 struct thread_pool pool;
 struct queue client_queue;
 FILE *flog;
+
+static volatile sig_atomic_t got_sigint = 0;
+
+static void handler(int sig) {
+  if (sig == SIGINT)
+    got_sigint = 1;
+}
 
 void init_thread_pool(int size) {
   // TODO: check
@@ -126,6 +139,7 @@ void process_query(int id, int client_fd, query q, const char *request) {
             "Thread #%d: query completed, %d records have been returned.\n", id,
             res_size);
   }
+  usleep(SLEEP);
 }
 
 void reader(int id, int client_fd, query q, const char *request) {
@@ -172,10 +186,11 @@ void writer(int id, int client_fd, query q, const char *request) {
 }
 
 void *thread(void *args) {
-  int id =  *((int *) args);
+  int id = *((int *)args);
   free(args);
 
   char request[1024];
+  int client_fd;
 
   // wait for work
   while (true) {
@@ -184,14 +199,21 @@ void *thread(void *args) {
     print_timestamp(flog);
     fprintf(flog, "Thread #%d: waiting for connection\n", id);
     while (client_queue.size == 0) {
+      if (got_sigint) {
+        pthread_mutex_unlock(&pool.lock);
+        return 0;
+      }
       pthread_cond_wait(&pool.cond, &pool.lock);
     }
     print_timestamp(flog);
     fprintf(flog, "A connection has been delegated to thread id #%d\n", id);
-    int client_fd = poll(&client_queue);
+    client_fd = poll(&client_queue);
     no_busy++;
     /* fprintf(flog, "client_fd: %d\n", client_fd); */
     pthread_mutex_unlock(&pool.lock);
+
+    if (got_sigint)
+      break;
 
     while (true) {
       /* int nobytes = recv(client_fd, request, 1024, 0); */
@@ -202,7 +224,7 @@ void *thread(void *args) {
         exit(EXIT_FAILURE);
       }
       if (res == 1) {
-        puts("nobytes 0");
+        fprintf(stderr, "No bytes read, client might be closed\n");
         break;
       }
       print_timestamp(flog);
@@ -212,6 +234,7 @@ void *thread(void *args) {
       strcpy(query_str, request);
       query q;
       if (parse_query(query_str, &q) == -1) {
+        free(query_str);
         print_timestamp(flog);
         fprintf(flog, "Error while parsing query: '%s'\n", request);
         send_error_msg(client_fd, request);
@@ -228,20 +251,20 @@ void *thread(void *args) {
         print_timestamp(flog);
         fprintf(flog, "ERROR: Unknown query\n");
       }
+      free(query_str);
 
-      sleep(1); // FIX: 0.5
     }
   }
-  return NULL;
+  return 0;
 }
 
 int init_socket(size_t port) {
   int server_fd;
   struct sockaddr_in server_addr;
 
-  /* if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) { */
-  /*   perror("signal"); */
-  /* } */
+  if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    perror("signal");
+  }
 
   if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
     perror("socket failed");
@@ -271,6 +294,103 @@ int init_socket(size_t port) {
 }
 
 int become_daemon() {
+  int maxfd, fd;
+  switch (fork()) {
+  case -1:
+    return -1;
+  case 0:
+    break;
+  default:
+    exit(EXIT_SUCCESS);
+  }
+  if (setsid() == -1)
+    return -1;
+  switch (fork()) {
+  case -1:
+    return -1;
+  case 0:
+    break;
+  default:
+    exit(EXIT_SUCCESS);
+  }
+  umask(0);
+
+  maxfd = sysconf(_SC_OPEN_MAX);
+  if (maxfd == -1)
+    maxfd = BD_MAX_CLOSE;
+  for (fd = 0; fd < maxfd; fd++)
+    close(fd);
+
+  close(STDIN_FILENO);
+  fd = open("/dev/null", O_RDWR);
+  if (fd != STDIN_FILENO)
+    return -1;
+  if (dup2(STDIN_FILENO, STDOUT_FILENO) != STDOUT_FILENO)
+    return -1;
+  if (dup2(STDIN_FILENO, STDERR_FILENO) != STDERR_FILENO)
+    return -1;
+  return 0;
+}
+
+int single_instance() {
+  int buflen = 100;
+  char buf[buflen];
+  int fd = open(PIDFILE, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+  if (fd == -1) {
+    perror("open pid file");
+    exit(EXIT_FAILURE);
+  }
+
+  struct flock fl;
+  fl.l_type = F_WRLCK;
+  fl.l_whence = SEEK_SET;
+  fl.l_start = 0;
+  fl.l_len = 0;
+
+  if (fcntl(fd, F_SETLK, &fl) == -1) {
+    if (errno == EAGAIN || errno == EACCES) {
+      fprintf(stderr, "PID file %s is locked, instance already running\n",
+              PIDFILE);
+      return -1;
+    }
+    perror("fcntl");
+    exit(EXIT_FAILURE);
+  }
+
+  if (ftruncate(fd, 0) == -1) {
+    perror("ftruncate()");
+    exit(EXIT_FAILURE);
+  }
+
+  snprintf(buf, buflen, "%ld\n", (long)getpid());
+  if (write(fd, buf, strlen(buf)) != strlen(buf)) {
+    perror("write()");
+    exit(EXIT_FAILURE);
+  }
+  return 0;
+}
+
+
+void exit_handler() {
+  fclose(flog);
+  free_queue(&client_queue);
+
+  for (int i = 0; i < table.no_cols; ++i) {
+    free(table.header[i]);
+  }
+  free(table.header);
+
+  for (int i = 0; i < table.size; ++i) {
+    for (int j = 0; j < table.no_cols; ++j) {
+      free(table.records[i][j]);
+    }
+    free(table.records[i]);
+  }
+  free(table.records);
+
+  pthread_cond_destroy(&pool.cond);
+  pthread_mutex_destroy(&pool.lock);
+  free(pool.threads);
 }
 
 int main(int argc, char *argv[]) {
@@ -312,18 +432,25 @@ int main(int argc, char *argv[]) {
     usage();
   }
 
-  /* int logfile_fd = open(logfile_path, O_WRONLY | O_CREAT, 0644); */
-  /* if (logfile_fd == -1) { */
-  /*   perror("open()"); */
-  /*   exit(EXIT_FAILURE); */
-  /* } */
+  if (single_instance() != 0)
+    exit(EXIT_FAILURE);
+  become_daemon();
+  if (single_instance() != 0) 
+    exit(EXIT_FAILURE);
 
-  /* setbuf(stdout, NULL); */
-  /* if (dup2(logfile_fd, 1) == -1) { */
-  /*   perror("dup2()"); */
-  /*   exit(EXIT_FAILURE); */
-  /* } */
-  /* setbuf(stdout, NULL); */
+  // signal handler
+  struct sigaction sa;
+  /* memset(&sa, 0, sizeof(sa)); */
+  sa.sa_handler = &handler;
+  sa.sa_flags = 0;
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(SIGINT, &sa, NULL) == -1) {
+    perror("sigaction()");
+  }
+
+  if (atexit(exit_handler) == -1)
+    perror("atexit");
+
 
   flog = fopen(logfile_path, "w");
   if (flog == NULL) {
@@ -356,7 +483,7 @@ int main(int argc, char *argv[]) {
 
   print_timestamp(flog);
   fprintf(flog, "Dataset loaded in ");
-  print_time_diff(start, end);
+  print_time_diff(flog, start, end);
   fprintf(flog, " seconds with %ld records.\n", table.size);
 
   no_active_readers = no_active_writers = no_waiting_readers =
@@ -385,6 +512,14 @@ int main(int argc, char *argv[]) {
   while (true) {
     int client_fd =
         accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
+
+    if (got_sigint == 1) {
+      print_timestamp(flog);
+      fprintf(flog,"Termination signal received, waiting for ongoing threads to "
+             "complete.\n");
+      break;
+    }
+
     if (client_fd == -1) {
       perror("accept()");
       exit(EXIT_FAILURE);
@@ -401,41 +536,17 @@ int main(int argc, char *argv[]) {
     pthread_mutex_unlock(&pool.lock);
   }
 
-  for (size_t i = 0; i < poolsize; ++i) {
+  pthread_cond_broadcast(&pool.cond);
+  for (int i = 0; i < poolsize; ++i) {
     if (pthread_join(pool.threads[i], NULL) != 0) {
       perror("pthread_join()");
       exit(EXIT_FAILURE);
     }
   }
 
-  return 0;
-
-  /* cmd = "SELECT Period, Magnitude FROM TABLE WHERE " */
-  /*       "Series_reference='BDCQ.SEA1AA';"; */
-  /* cmd = "SELECT * FROM TABLE WHERE " */
-  /*       "STATUS='F',Series_reference='BDCQ.SEA1AA',Period='2020.12';"; */
-  /* cmd = "SELECT columnName1, columnName2, columnName3 FROM TABLE;"; */
-  /* cmd = "UPDATE TABLE SET Period='-1' WHERE Series_reference='BDCQ.SEA1AA';";
-   */
-  /* cmd = "UPDATE TABLE SET columnName1='value1';"; */
-  /* input = "SELECT DISTINCT Series_reference,Series_title_5 FROM TABLE;"; */
-
-  /* char *query_str = malloc(256); */
-  /* strcpy(query_str, input); */
-
-  /* query q; */
-  /* memset(&q, 0, sizeof(q)); */
-  /* if (parse_query(query_str, &q) == -1) { */
-  /*   fprintf(stderr, "Error while parsing query: '%s'\n", input); */
-  /* } */
-
-  /* #ifdef DEBUG */
-  /* print_query(q); */
-  /* #endif */
-
-  /* if (run_query(q) == -1) { */
-  /*   fprintf(stderr, "Error while running query: '%s'\n", input); */
-  /* } */
+  print_timestamp(flog);
+  fprintf(flog,"All threads have terminated, server shutting down.\n");
 
   return 0;
+
 }

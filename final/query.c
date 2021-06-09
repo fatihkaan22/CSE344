@@ -18,7 +18,6 @@
 int run_query(query q, int result_records[], unsigned int *res_size) {
   if (!valid_query(q))
     return -1;
-  /* int result_records[table.size + 1]; // TODO: */
   *res_size = 0;
   switch (q.cmd) {
   case SELECT: {
@@ -48,7 +47,7 @@ int run_query(query q, int result_records[], unsigned int *res_size) {
     }
     break;
   default:
-    puts("ERROR"); // TODO:
+    fprintf(stderr, "ERROR: run query, default\n");
     return -1;
   }
 
@@ -59,7 +58,7 @@ int run_query(query q, int result_records[], unsigned int *res_size) {
 
 int parse_query(char *query_str, query *q) {
   char delims[] = " \t\r\n ,;";
-  char *tokens[64]; // WARN:
+  char *tokens[128];
   if (query_str[strlen(query_str) - 1] != ';') {
     fprintf(stderr, "ERROR: Semicolon expected at the end of the query\n");
     return -1;
@@ -96,7 +95,7 @@ int parse_query(char *query_str, query *q) {
     break;
   }
   default:
-    puts("ERROR"); // TODO:
+    fprintf(stderr, "ERROR: parse query, default\n");
   }
   if (query_end(tokens[tok_idx]))
     return 0;
@@ -133,7 +132,6 @@ void print_query(query q) {
     printf(" %s=", q.column_filter[i].key);
     printf("%s ", q.column_filter[i].value);
   }
-
   puts("\n-----------");
 }
 
@@ -160,18 +158,13 @@ int read_cols(char *tokens[], char *columns[], char *until) {
 int read_pairs(char *tokens[], pair column_filter[]) {
   int i = 0;
   while (tokens[i] && !(streq(tokens[i], "WHERE") || streq(tokens[i], ";"))) {
-    /* printf(">>%s\n", tokens[i]); */
     if (streq(tokens[i], "*")) {
-      printf("YILDIZ\n");
       column_filter[i].key = tokens[i];
       return 1;
     }
-    // TODO: malloc
     // TODO: think about empty spaces
     char *key = strtok(tokens[i], "=");
     char *val = strtok(NULL, "='");
-    /* printf("%s\n", key); */
-    /* printf("%s\n", val); */
     column_filter[i].key = key;
     column_filter[i].value = val;
     ++i;
@@ -258,9 +251,6 @@ bool match_header_pair(pair *cols) {
 }
 
 bool valid_query(query q) {
-  /* if (*q.columns[0] != '*' && !match_header_str(q.columns)) */
-  /* puts("here"); */
-  /* printf("*col[0]:%c\n", *q.columns[0]); */
   if (*q.columns && *q.columns[0] != '*' && !match_header_str(q.columns))
     return false;
   if (!match_header_pair(q.column_filter))

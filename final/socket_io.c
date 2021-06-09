@@ -11,20 +11,19 @@
 
 #include "socket_io.h"
 
-
 int send_int(int num, int fd) {
   int32_t conv = htonl(num);
   char *data = (char *)&conv;
   int left = sizeof(conv);
-  int rc;
+  int n;
   do {
-    rc = write(fd, data, left);
-    if (rc < 0) {
-      fprintf(stderr, "ERROR: rc < 0\n");
+    n = write(fd, data, left);
+    if (n < 0) {
+      perror("write()");
       return -1;
     } else {
-      data += rc;
-      left -= rc;
+      data += n;
+      left -= n;
     }
   } while (left > 0);
   return 0;
@@ -34,15 +33,15 @@ int receive_int(int *num, int fd) {
   int32_t ret;
   char *data = (char *)&ret;
   int left = sizeof(ret);
-  int rc;
+  int n;
   do {
-    rc = read(fd, data, left);
-    if (rc <= 0) {
-      fprintf(stderr, "ERROR: rc < 0\n");
+    n = read(fd, data, left);
+    if (n <= 0) {
+      perror("read()");
       return -1;
     } else {
-      data += rc;
-      left -= rc;
+      data += n;
+      left -= n;
     }
   } while (left > 0);
   *num = ntohl(ret);
@@ -51,48 +50,45 @@ int receive_int(int *num, int fd) {
 
 int send_line(char *buffer, int len, int fd) {
   send_int(len, fd);
-
   int left = len;
-  int rc;
-
+  int n;
   do {
-    rc = write(fd, buffer, left);
-    if (rc < 0) {
+    n = write(fd, buffer, left);
+    if (n < 0) {
       perror("write()");
       return -1;
-    } else if (rc == 0) {
+    } else if (n == 0) {
       return 1;
     } else {
-      buffer += rc;
-      left -= rc;
+      buffer += n;
+      left -= n;
     }
   } while (left > 0);
-
   return 0;
 }
 
 int receive_line(char *buffer, int fd) {
   int left;
   receive_int(&left, fd);
-  int rc;
+  int n;
 
   do {
-    rc = read(fd, buffer, left);
-    if (rc < 0) {
+    n = read(fd, buffer, left);
+    if (n < 0) {
       perror("read()");
       return -1;
-    } else if (rc == 0) {
+    } else if (n == 0) {
       return 1;
     } else {
-      buffer += rc;
-      left -= rc;
+      buffer += n;
+      left -= n;
     }
   } while (left > 0);
   return 0;
 }
 
 // in seconds
-void print_time_diff(struct timespec t1, struct timespec t2) {
+void print_time_diff(FILE *f, struct timespec t1, struct timespec t2) {
   struct timespec delta;
   unsigned int NS_PER_SECOND = 1000000000;
   delta.tv_nsec = t2.tv_nsec - t1.tv_nsec;
@@ -104,7 +100,7 @@ void print_time_diff(struct timespec t1, struct timespec t2) {
     delta.tv_nsec -= NS_PER_SECOND;
     delta.tv_sec++;
   }
-  printf("%d.%.6ld", (int)delta.tv_sec, delta.tv_nsec / 1000);
+  fprintf(f,"%d.%.6ld", (int)delta.tv_sec, delta.tv_nsec / 1000);
 }
 
 void print_timestamp(FILE *f) {

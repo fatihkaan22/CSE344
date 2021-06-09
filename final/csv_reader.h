@@ -6,6 +6,10 @@
 
 #define DELIM ","
 
+#define MAX_ROW 1000000
+#define MAX_COL 512
+#define LINE 4096
+
 typedef char **record;
 
 struct sql_table {
