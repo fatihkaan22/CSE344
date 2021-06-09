@@ -1,6 +1,6 @@
 #include "csv_reader.h"
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct sql_table table;
 
@@ -99,14 +99,27 @@ void print_row(record r, bool include[]) {
     puts("");
 }
 
-void print_table(char **columns, int rows[], int rows_size) {
-  if (rows_size == 0)
-    return;
-  bool include[table.no_cols];
+int sprint_row(char *buffer, record r, bool include[]) {
+  int len = 0;
+  bool nl = false;
+  for (size_t i = 0; i < table.no_cols; ++i) {
+    if (include == NULL || include[i]) {
+      len += sprintf(buffer + len, "%s | ", r[i]);
+      nl = true;
+    }
+  }
+  if (nl)
+    len += sprintf(buffer + len, "\n");
+  return len;
+}
+
+void set_include_cols(bool *include, char **columns) {
   if (columns[0] == NULL || *columns[0] == '*') {
-    memset(&include, 1, sizeof(include));
+    /* memset(&include, 1, sizeof(include)); */
+    memset(include, 1, table.no_cols * sizeof(bool));
   } else {
-    memset(&include, 0, sizeof(include));
+    /* memset(&include, 0, sizeof(include)); */
+    memset(include, 0, table.no_cols * sizeof(bool));
     for (size_t i = 0; columns[i]; ++i) {
       for (size_t j = 0; j < table.no_cols; ++j) {
         if (strcmp(columns[i], table.header[j]) == 0) {
@@ -115,6 +128,28 @@ void print_table(char **columns, int rows[], int rows_size) {
       }
     }
   }
+}
+
+void print_table(char **columns, int rows[], int rows_size) {
+  if (rows_size == 0)
+    return;
+
+  bool include[table.no_cols];
+  set_include_cols(include, columns);
+  /* if (columns[0] == NULL || *columns[0] == '*') { */
+  /*   /1* memset(&include, 1, sizeof(include)); *1/ */
+  /*   memset(&include, 1, table.no_cols * sizeof(bool)); */
+  /* } else { */
+  /*   /1* memset(&include, 0, sizeof(include)); *1/ */
+  /*   memset(&include, 0, table.no_cols * sizeof(bool)); */
+  /*   for (size_t i = 0; columns[i]; ++i) { */
+  /*     for (size_t j = 0; j < table.no_cols; ++j) { */
+  /*       if (strcmp(columns[i], table.header[j]) == 0) { */
+  /*         include[j] = true; */
+  /*       } */
+  /*     } */
+  /*   } */
+  /* } */
 
   print_row(table.header, include);
   for (int i = 0; i < rows_size; ++i) {
