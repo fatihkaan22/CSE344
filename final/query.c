@@ -41,7 +41,8 @@ int run_query(query q, int result_records[], unsigned int *res_size) {
   case SELECT_DISTINCT:
     for (size_t i = 0; i < table.size; ++i) {
       if (record_match(i, q.column_filter) &&
-          !contains_all(result_records, *res_size, q.columns, table.records[i])) {
+          !contains_all(result_records, *res_size, q.columns,
+                        table.records[i])) {
         result_records[(*res_size)++] = i;
       }
     }
@@ -117,6 +118,9 @@ void print_query(query q) {
     break;
   case SELECT_DISTINCT:
     printf("SELECT_DISTINCT\n");
+    break;
+  default:
+    fprintf(stderr, "ERROR: run query, default\n");
   }
   printf("columns: ");
   for (int i = 0; q.columns[i] != NULL; ++i) {
@@ -326,6 +330,4 @@ bool query_select(enum sql_command cmd) {
   return (cmd == SELECT || cmd == SELECT_DISTINCT);
 }
 
-bool query_update(enum sql_command cmd) {
-  return (cmd == UPDATE);
-}
+bool query_update(enum sql_command cmd) { return (cmd == UPDATE); }

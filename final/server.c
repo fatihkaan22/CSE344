@@ -58,7 +58,6 @@ static void handler(int sig) {
 }
 
 void init_thread_pool(int size) {
-  // TODO: check
   pool.threads = malloc(size * sizeof(pthread_t));
   pool.size = size;
   pthread_cond_init(&pool.cond, NULL);
@@ -110,7 +109,6 @@ void send_result(int client_fd, char **columns, int rows[], int rows_size) {
   char buffer[1024];
   int len;
   // first send how many lines the data is
-  // TODO: send integer
   send_int(rows_size, client_fd);
 
   len = sprint_row(buffer, table.header, include);
@@ -121,14 +119,13 @@ void send_result(int client_fd, char **columns, int rows[], int rows_size) {
   for (int i = 0; i < rows_size; ++i) {
     len = sprint_row(buffer, table.records[rows[i]], include);
     send_line(buffer, len + 1, client_fd);
-    /* printf("%s\n", buffer); */
-    /* send(client_fd, buffer, 1024, 0); */
   }
 }
 
 void process_query(int id, int client_fd, query q, const char *request) {
-  int result_records[table.size + 1]; // TODO:
+  int result_records[table.size + 1];
   unsigned int res_size;
+  usleep(SLEEP);
   if (run_query(q, result_records, &res_size) == -1) {
     fprintf(stderr, "Error while running query: '%s'\n", request);
   } else {
@@ -139,7 +136,6 @@ void process_query(int id, int client_fd, query q, const char *request) {
             "Thread #%d: query completed, %d records have been returned.\n", id,
             res_size);
   }
-  usleep(SLEEP);
 }
 
 void reader(int id, int client_fd, query q, const char *request) {
@@ -216,7 +212,6 @@ void *thread(void *args) {
       break;
 
     while (true) {
-      /* int nobytes = recv(client_fd, request, 1024, 0); */
       int res = receive_line(request, client_fd);
 
       if (res == -1) {
@@ -230,7 +225,7 @@ void *thread(void *args) {
       print_timestamp(flog);
       fprintf(flog, "Thread #%d: received query '%s'\n", id, request);
 
-      char *query_str = malloc(1024);
+      char *query_str = malloc(4096);
       strcpy(query_str, request);
       query q;
       if (parse_query(query_str, &q) == -1) {
@@ -432,6 +427,12 @@ int main(int argc, char *argv[]) {
     usage();
   }
 
+  FILE *fp = fopen(dataset_path, "r");
+  if (fp == NULL) {
+    fprintf(stderr, "Cannot open file");
+    exit(EXIT_FAILURE);
+  }
+
   if (single_instance() != 0)
     exit(EXIT_FAILURE);
   become_daemon();
@@ -461,20 +462,25 @@ int main(int argc, char *argv[]) {
   setbuf(flog, NULL);
 
   // load dataset into memory
-  FILE *fp = fopen(dataset_path, "r");
+  fp = fopen(dataset_path, "r");
   if (fp == NULL) {
     fprintf(stderr, "Cannot open file");
     exit(EXIT_FAILURE);
   }
+ 
   print_timestamp(flog);
-  fprintf(flog, "Loading dataset...\n"); // TODO:
+  fprintf(flog, "Executing with parameters:\n");
+  print_timestamp(flog);
+  fprintf(flog, "\t -p %d\n", port);
+  print_timestamp(flog);
+  fprintf(flog, "\t -o %s\n", logfile_path);
+  print_timestamp(flog);
+  fprintf(flog, "\t -l %d\n", poolsize);
+  print_timestamp(flog);
+  fprintf(flog, "\t -d %s\n", dataset_path);
 
-  /* time_t start, end; */
-  /* time_t rawtime; */
-  /* struct tm * timeinfo; */
-  /* time (&rawtime); */
-  /* timeinfo = localtime (&rawtime); */
-  /* printf ("%s", asctime(timeinfo)); */
+  print_timestamp(flog);
+  fprintf(flog, "Loading dataset...\n"); 
 
   struct timespec start, end;
   clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -506,7 +512,6 @@ int main(int argc, char *argv[]) {
   }
 
   struct sockaddr_in client_addr;
-  // TODO: change addrlen
   socklen_t addrlen = sizeof(struct sockaddr_in);
 
   while (true) {

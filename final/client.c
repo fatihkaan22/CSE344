@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "socket_io.h"
@@ -78,6 +79,10 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  if (queryfile_path == NULL || port == 0 || id == 0 || ip == NULL) {
+    usage();
+  }
+
   struct sigaction sa;
   /* memset(&sa, 0, sizeof(sa)); */
   sa.sa_handler = &handler;
@@ -95,7 +100,8 @@ int main(int argc, char *argv[]) {
 
   int sock;
   struct sockaddr_in serv_addr;
-  char query[BUF_SIZE];
+  char query_buf[BUF_SIZE];
+  char *query = query_buf;
   char respond[BUF_SIZE];
   if ((sock = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
     perror("socket()");
@@ -106,29 +112,60 @@ int main(int argc, char *argv[]) {
   serv_addr.sin_port = htons(port);
   serv_addr.sin_addr.s_addr = inet_addr(ip);
 
+  print_timestamp(stdout);
+  printf("Client-%d connecting %s:%d\n", id, ip, port);
   if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == -1) {
     perror("connect()");
     exit(EXIT_FAILURE);
   }
 
-  int i = 0;
+  struct timespec start, end;
+  int total = 0;
   while (fgets(query, sizeof(respond), fp)) {
     if (got_sigint)
       break;
+
+    char *rest;
+    char *line_id_str = strtok_r(query, " ", &rest);
+    int line_id;
+    line_id = try_parse_int(line_id_str);
+
+    if (line_id != id) {
+      continue;
+    }
+
+    query = rest;
+
     query[strcspn(query, "\n")] = 0; // remove trailing \n
+    print_timestamp(stdout);
+    printf("Client-%d connected and sending query: '%s'\n", id, query);
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     send_line(query, strlen(query) + 1, sock);
     // first read gets the how many records are there
     int no_records;
     receive_int(&no_records, sock);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    print_timestamp(stderr);
+    printf("Server's response to Client-%d is %d records, and arrived in ", id,
+           no_records);
+    print_time_diff(stdout, start, end);
+    printf(" seconds\n");
+
     /* printf("%d\n", no_records); */
     for (int j = 0; j < no_records + 1; ++j) { // number of records + header
       if (receive_line(respond, sock) == -1) {
+        print_timestamp(stderr);
         fprintf(stderr, "ERROR: couldn't receive_line\n");
       }
-      printf("%s", respond);
+      print_timestamp(stdout);
+      printf("%d %s", j, respond);
     }
-    ++i;
+    total++;
   }
+
+  print_timestamp(stdout);
+  printf("Total of %d queries were executed, client is terminating.\n", total);
 
   fclose(fp);
   return 0;

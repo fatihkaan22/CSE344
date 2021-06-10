@@ -6,6 +6,8 @@
 
 enum sql_command { UNKNOWN = 0, SELECT, SELECT_DISTINCT, UPDATE };
 
+#define MAX_F 128
+
 typedef struct pair {
   char *key;
   char *value;
@@ -14,9 +16,9 @@ typedef struct pair {
 typedef struct query {
   enum sql_command cmd;
   bool distinct;
-  char *columns[128];
-  pair column_set[128];
-  pair column_filter[128];
+  char *columns[MAX_F];
+  pair column_set[MAX_F];
+  pair column_filter[MAX_F];
 } query;
 
 
