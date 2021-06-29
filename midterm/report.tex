@@ -1,0 +1,213 @@
+% Created 2021-05-03 Mon 04:01
+% Intended LaTeX compiler: pdflatex
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{grffile}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{textcomp}
+\usepackage{amssymb}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\documentclass{article}
+\usepackage{here}
+\usepackage{xcolor}
+\usepackage[margin=3.0cm]{geometry}
+\usepackage{amsmath}
+\usepackage{parskip}
+\renewcommand\arraystretch{1.4}
+\usepackage[margin=1in]{geometry}
+\usepackage{minted}
+\definecolor{bg}{rgb}{0.95,0.95,0.95}
+\newminted{c}{frame=single}
+\author{Fatih Kaan Salgır - 171044009}
+\date{}
+\title{CSE344 - System Programming - Midterm}
+\hypersetup{
+ pdfauthor={Fatih Kaan Salgır - 171044009},
+ pdftitle={CSE344 - System Programming - Midterm},
+ pdfkeywords={},
+ pdfsubject={},
+ pdfcreator={Emacs 27.2 (Org mode 9.4.5)}, 
+ pdflang={English}}
+\begin{document}
+
+\maketitle
+
+\section{Design Explanation}
+\label{sec:org77741c8}
+
+\subsection{Children processes}
+\label{sec:org14c3797}
+The parent process will fork into 3 types of children:
+
+\subsubsection{Nurses}
+\label{sec:orga1d9756}
+Nurses are the producers. Just like any other producer \& consumer problem they will wait for empty space when the buffer is full. However posting the semaphore to notify consumer is a little bit different. The value of semaphore must be the minimum of 2 vaccines. In order to satisfy this, semaphore should be posted only if the type of the vaccine added to buffer is less than or equal to the other type of vaccine:
+
+\begin{ccode}[fontsize=\small,frame=single,framesep=3mm]{text}
+if (!mem->eof && novacc_this <= novacc_other)
+  sem_post(&mem->vaccines_available);
+\end{ccode}
+
+Nurses will continue until, one of them reach the end of the file, and return value of \texttt{read()} is goint to be 0. In this case nurse will be terminated. But before terminaton, it will perform \texttt{sem\_post(\&mem->empty)} to make sure that the other nurses won't stuck in \texttt{sem\_wait(\&mem->empty)}, and they will also terminate.
+
+\subsubsection{Vaccinators}
+\label{sec:org782ef75}
+Vaccinators are the consumers. They will wait for the semaphore: \texttt{vaccines\_available}, and post \texttt{empty}. In the critical section:
+\begin{enumerate}
+\item remove vaccines from the buffer
+\item selct the next citizen to invite
+\item set the information to print
+\end{enumerate}
+
+After critical section, the vaccinator is going to inform the citizen by writing to its pipe. And print the log.
+
+Note: Since printing is out of the critical section, the order of the lines are not guaranteed. I have added both on the Running \& Test Cases section.
+\subsubsection{Citizens}
+\label{sec:org207eaba}
+Citizens should wait for get vaccinated. Thus, a citizen will read its pipe \texttt{t} times (number of shots) in total. The write end of the pipes are located in the shared memory, and they are accesed by vaccinators.
+
+\newpage
+
+\subsection{Number of Semaphores}
+\label{sec:org22e9237}
+3 unnamed POSIX semaphores are used, and they are located in shared memory.
+\begin{itemize}
+\item \texttt{sem}: to protect access to shared memory
+\item \texttt{empty}: nurses (producers) will wait on this semaphore, when the buffer is full
+\item \texttt{vaccines\_available}: vaccinators (consumers) will wait on this semaphore, until there are enough amount of vaccines in the buffer
+\end{itemize}
+
+\subsection{Shared Memory}
+\label{sec:orgd862a9c}
+Multiple unnamed shared memories is used for interprocess communication.  \texttt{mmap} system call is used with \texttt{MAP\_SHARED | MAP\_ANONYMOUS} flags, therefore the mapping is not backed by any file.
+
+\subsection{Handling SIGINT}
+\label{sec:org42d912d}
+In case of receiving \texttt{SIGINT}, handler function is going to call \texttt{exit(EXIT\_SUCCESS)}. An exit handler is registered, therefore it will terminated gracefully.
+
+\section{Running \& Test Cases}
+\label{sec:org6d58fe7}
+
+Program tested with different cases and also with the valgrind to check memory leaks. According the output of the valgrind, "All heap blocks were freed -- no leaks are possible".
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+valgrind --leak-check=full \
+         --show-leak-kinds=all \
+         --track-origins=yes \
+         --verbose \
+         --log-file=valgrind-out.txt \
+         ...
+\end{minted}
+
+\newpage
+
+When log functions are inside of the critical section:
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+./program  -n 3 -v 3 -c 3 -b 11 -t 3 -i input
+\end{minted}
+
+
+\begin{minted}[breaklines,fontsize=\footnotesize,frame=single,framesep=3mm]{text}
+Welcome to GTU344 clinic. Number of citizens to vaccinate c=3 with t=3 doeses.
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 1 vaccine1 and 0 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 2: the clinic has 1 vaccine1 and 1 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 2 vaccine1 and 1 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 2: the clinic has 2 vaccine1 and 2 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 3 vaccine1 and 2 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 2: the clinic has 3 vaccine1 and 3 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 4 vaccine1 and 3 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 2: the clinic has 4 vaccine1 and 4 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 5 vaccine1 and 4 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 2: the clinic has 5 vaccine1 and 5 vaccine2.
+Nurse 2 (pid=861724) has brought vaccine 1: the clinic has 6 vaccine1 and 5 vaccine2.
+Vaccinator 1 (pid=861729) is inviting citizen pid=861726 to the clinic.
+Citizen 1 (pid=861726) is vaccinated for the 1st time: the clinic has 5 vaccine1 and 4 vaccine2. 
+Vaccinator 2 (pid=861730) is inviting citizen pid=861727 to the clinic.
+Citizen 2 (pid=861727) is vaccinated for the 1st time: the clinic has 4 vaccine1 and 3 vaccine2. 
+Nurse 3 (pid=861725) has brought vaccine 2: the clinic has 4 vaccine1 and 4 vaccine2.
+Vaccinator 3 (pid=861731) is inviting citizen pid=861728 to the clinic.
+Citizen 3 (pid=861728) is vaccinated for the 1st time: the clinic has 3 vaccine1 and 3 vaccine2. 
+Vaccinator 3 (pid=861731) is inviting citizen pid=861726 to the clinic.
+Citizen 1 (pid=861726) is vaccinated for the 2nd time: the clinic has 2 vaccine1 and 2 vaccine2. 
+Vaccinator 2 (pid=861730) is inviting citizen pid=861727 to the clinic.
+Citizen 2 (pid=861727) is vaccinated for the 2nd time: the clinic has 1 vaccine1 and 1 vaccine2. 
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 2 vaccine1 and 1 vaccine2.
+Nurse 1 (pid=861723) has brought vaccine 2: the clinic has 2 vaccine1 and 2 vaccine2.
+Nurse 3 (pid=861725) has brought vaccine 1: the clinic has 3 vaccine1 and 2 vaccine2.
+Vaccinator 1 (pid=861729) is inviting citizen pid=861728 to the clinic.
+Citizen 3 (pid=861728) is vaccinated for the 2nd time: the clinic has 2 vaccine1 and 1 vaccine2. 
+Nurse 2 (pid=861724) has brought vaccine 2: the clinic has 2 vaccine1 and 2 vaccine2.
+Vaccinator 3 (pid=861731) is inviting citizen pid=861726 to the clinic.
+Citizen 1 (pid=861726) is vaccinated for the 3rd time: the clinic has 1 vaccine1 and 1 vaccine2. The citizen is leaving. Remaining citizens to vaccinate: 2
+Nurse 1 (pid=861723) has brought vaccine 1: the clinic has 2 vaccine1 and 1 vaccine2.
+Nurse 3 (pid=861725) has brought vaccine 2: the clinic has 2 vaccine1 and 2 vaccine2.
+Vaccinator 2 (pid=861730) is inviting citizen pid=861727 to the clinic.
+Citizen 2 (pid=861727) is vaccinated for the 3rd time: the clinic has 1 vaccine1 and 1 vaccine2. The citizen is leaving. Remaining citizens to vaccinate: 1
+Vaccinator 1 (pid=861729) is inviting citizen pid=861728 to the clinic.
+Citizen 3 (pid=861728) is vaccinated for the 3rd time: the clinic has 0 vaccine1 and 0 vaccine2. The citizen is leaving. Remaining citizens to vaccinate: 0
+Nurses have carried all vaccines to the buffer, terminating.
+All citizens have been vacinated.
+Vaccinator 1 (pid=861729) vaccinated 3 doses. Vaccinator 2 (pid=861730) vaccinated 3 doses. Vaccinator 3 (pid=861731) vaccinated 3 doses. The clinic is now close. Stay healthy.
+\end{minted}
+
+
+\newpage
+
+When log functions are out of the critical section:
+
+\begin{minted}[fontsize=\small,frame=single,framesep=3mm]{text}
+./program  -n 3 -v 3 -c 3 -b 11 -t 3 -i input
+\end{minted}
+
+
+\begin{minted}[breaklines,fontsize=\footnotesize,frame=single,framesep=3mm]{text}
+Welcome to GTU344 clinic. Number of citizens to vaccinate c=3 with t=3 doeses.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 1 vaccine1 and 0 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 1 vaccine1 and 1 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 2 vaccine1 and 1 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 2 vaccine1 and 2 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 3 vaccine1 and 2 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 3 vaccine1 and 3 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 4 vaccine1 and 3 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 4 vaccine1 and 4 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 5 vaccine1 and 4 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 5 vaccine1 and 5 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 5 vaccine1 and 4 vaccine2.
+Vaccinator 1 (pid=866631) is inviting citizen pid=866628 to the clinic.
+Citizen 1 (pid=866628) is vaccinated for the 1st time: the clinic has 4 vaccine1 and 4 vaccine2. 
+Vaccinator 1 (pid=866631) is inviting citizen pid=866630 to the clinic.
+Citizen 3 (pid=866630) is vaccinated for the 1st time: the clinic has 3 vaccine1 and 2 vaccine2. 
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 3 vaccine1 and 3 vaccine2.
+Vaccinator 2 (pid=866632) is inviting citizen pid=866629 to the clinic.
+Citizen 2 (pid=866629) is vaccinated for the 1st time: the clinic has 4 vaccine1 and 3 vaccine2. 
+Nurse 3 (pid=866627) has brought vaccine 1: the clinic has 4 vaccine1 and 3 vaccine2.
+Vaccinator 1 (pid=866631) is inviting citizen pid=866628 to the clinic.
+Nurse 1 (pid=866625) has brought vaccine 2: the clinic has 3 vaccine1 and 3 vaccine2.
+Citizen 1 (pid=866628) is vaccinated for the 2nd time: the clinic has 3 vaccine1 and 2 vaccine2. 
+Vaccinator 2 (pid=866632) is inviting citizen pid=866629 to the clinic.
+Vaccinator 1 (pid=866631) is inviting citizen pid=866630 to the clinic.
+Citizen 3 (pid=866630) is vaccinated for the 2nd time: the clinic has 1 vaccine1 and 1 vaccine2. 
+Citizen 2 (pid=866629) is vaccinated for the 2nd time: the clinic has 2 vaccine1 and 2 vaccine2. 
+Nurse 3 (pid=866627) has brought vaccine 1: the clinic has 1 vaccine1 and 0 vaccine2.
+Nurse 3 (pid=866627) has brought vaccine 2: the clinic has 1 vaccine1 and 1 vaccine2.
+Nurse 1 (pid=866625) has brought vaccine 1: the clinic has 2 vaccine1 and 1 vaccine2.
+Vaccinator 3 (pid=866633) is inviting citizen pid=866628 to the clinic.
+Vaccinator 2 (pid=866632) is inviting citizen pid=866629 to the clinic.
+Nurse 3 (pid=866627) has brought vaccine 2: the clinic has 1 vaccine1 and 1 vaccine2.
+Citizen 1 (pid=866628) is vaccinated for the 3rd time: the clinic has 0 vaccine1 and 0 vaccine2. The citizen is leaving. Remaining citizens to vaccinate: 2
+Citizen 2 (pid=866629) is vaccinated for the 3rd time: the clinic has 1 vaccine1 and 0 vaccine2. The citizen is leaving. Remaining citizens to vaccinate: 1
+Vaccinator 2 (pid=866632) is inviting citizen pid=866630 to the clinic.
+Citizen 3 (pid=866630) is vaccinated for the 3rd time: the clinic has 0 vaccine1 and 0 vaccine2. The citizen is leaving. Remaining citizens to vaccinate: 0
+All citizens have been vacinated.
+Nurses have carried all vaccines to the buffer, terminating.
+Vaccinator 1 (pid=866631) vaccinated 4 doses. Vaccinator 2 (pid=866632) vaccinated 4 doses. Vaccinator 3 (pid=866633) vaccinated 1 doses. The clinic is now close. Stay healthy.
+\end{minted}
+\end{document}

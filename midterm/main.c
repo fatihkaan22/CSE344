@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+
 #define R "\x1B[31m"
 #define C "\x1B[36m"
 #define G "\x1B[32m"
@@ -22,8 +23,6 @@ struct shared_memory *mem;
 int memsize = 0;
 int *citizen_pids;
 int citizen_pids_size;
-int *vaccinator_doses;
-int vaccinator_doses_size;
 int *citizen_no_vaccinated;
 int citizen_no_vaccinated_size;
 int *buffer;
@@ -35,18 +34,17 @@ struct shared_memory {
   int novacc2;
   int bufsize;
   int next_citizen_idx;
-  int current_tour;
+  int shots_finished;
   bool eof;
   int no_nurse_terminated;
   int remaining_citizens;
 };
 
-static bool gotSIGINT = 0;
-
 void handler(int signum) {
   switch (signum) {
   case SIGINT:
-    gotSIGINT = 1;
+		write(1, "SIGINT caught, terminating\n", 27);
+		exit(EXIT_SUCCESS);
     break;
   default:
     fprintf(stderr, "handler caught unexpected signal %d\n", signum);
@@ -56,7 +54,6 @@ void handler(int signum) {
 void exit_handler() {
   munmap(mem, memsize);
   munmap(citizen_pids, citizen_pids_size);
-  munmap(vaccinator_doses, vaccinator_doses_size);
   munmap(citizen_no_vaccinated, citizen_no_vaccinated_size);
   munmap(buffer, buffer_size);
 }
@@ -140,7 +137,7 @@ void log_welcome(int c, int t) {
 }
 
 void log_vaccinator_done(int id, int pid, int nodose) {
-  printf("Vaccinator %d (pid=%d) vaccinated %d doses. ", id, pid, nodose);
+  printf("Vaccinator %d (pid=%d) vaccinated %d doses.\n", id, pid, nodose);
   fflush(stdout);
 }
 
@@ -194,7 +191,6 @@ void init_mem(int bufsize, int nocitizens) {
   mem->bufsize = bufsize;
   mem->novacc1 = mem->novacc2 = 0;
   mem->next_citizen_idx = 0;
-  mem->current_tour = 0;
   mem->eof = false;
   mem->no_nurse_terminated = 0;
   mem->remaining_citizens = nocitizens;
@@ -286,27 +282,29 @@ int vaccinator(int id, int nocitizens, int noshots,
   int nodose = 0, v1, v2, remaining, c_no_vacc;
   char msg = 'x'; // message to send from fifo
   // wait until both vaccinates are available
-  while (mem->current_tour != noshots) {
+  while (mem->shots_finished > 0) {
     if (sem_wait(&mem->vaccines_available) == -1) {
       perror("sem_wait()");
       exit(EXIT_FAILURE);
     }
-    if (mem->current_tour == noshots)
+    if (mem->shots_finished <= 0)
       break;
     if (sem_wait(&mem->sem) == -1) {
       perror("sem_wait()");
       exit(EXIT_FAILURE);
     }
+    if (mem->shots_finished <= 0)
+      break;
     // in critcal section:
     // - remove vaccines from buffer
     // - select citizen to be vaccinated
+    mem->shots_finished--;
     remove_vaccines();
     v1 = mem->novacc1;
     v2 = mem->novacc2;
     int citizen_idx = mem->next_citizen_idx;
     mem->next_citizen_idx++;
     if (mem->next_citizen_idx == nocitizens) {
-      mem->current_tour++;
       mem->next_citizen_idx = 0;
     }
     c_no_vacc = ++citizen_no_vaccinated[citizen_idx];
@@ -340,7 +338,7 @@ int vaccinator(int id, int nocitizens, int noshots,
   /* #ifdef DEBUG */
   /*   printf(R "vaccinator %d terminated\n" T, id); */
   /* #endif */
-  vaccinator_doses[id - 1] = nodose;
+  log_vaccinator_done(id, getpid(), nodose);
   return 0;
 }
 
@@ -421,6 +419,7 @@ int main(int argc, char *argv[]) {
 
   log_welcome(nocitizens, noshots);
   int noprocesses = nonurses + novaccinators + nocitizens;
+	signal(SIGINT, handler);
   atexit(exit_handler);
   // init buffer
   memsize = sizeof(struct shared_memory); // vaccines
@@ -429,9 +428,6 @@ int main(int argc, char *argv[]) {
   citizen_pids_size = nocitizens * sizeof(int);
   citizen_pids = mmap(NULL, citizen_pids_size, PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  vaccinator_doses_size = novaccinators * sizeof(int);
-  vaccinator_doses = mmap(NULL, vaccinator_doses_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   citizen_no_vaccinated_size = nocitizens * sizeof(int);
   citizen_no_vaccinated =
       mmap(NULL, citizen_no_vaccinated_size, PROT_READ | PROT_WRITE,
@@ -440,6 +436,7 @@ int main(int argc, char *argv[]) {
   buffer = mmap(NULL, buffer_size, PROT_READ | PROT_WRITE,
                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   init_mem(bufsize, nocitizens);
+	mem->shots_finished = noshots * nocitizens;
   if (mem == MAP_FAILED) {
     perror("mmap()");
     exit(EXIT_FAILURE);
@@ -520,9 +517,6 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  for (int i = 0; i < novaccinators; ++i) {
-    log_vaccinator_done(i + 1, vaccinator_pids[i], vaccinator_doses[i]);
-  }
   puts("The clinic is now close. Stay healthy.");
 
   for (int i = 0; i < nocitizens; ++i) {
@@ -531,7 +525,6 @@ int main(int argc, char *argv[]) {
   }
   munmap(mem, memsize);
   munmap(citizen_pids, citizen_pids_size);
-  munmap(vaccinator_doses, vaccinator_doses_size);
   munmap(citizen_no_vaccinated, citizen_no_vaccinated_size);
   munmap(buffer, buffer_size);
 
