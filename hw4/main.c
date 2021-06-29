@@ -132,6 +132,7 @@ void *thread_student_for_hire(void *args) {
 #ifdef DEBUG
   printf("%s end\n", s->name);
 #endif
+  return NULL;
 }
 
 void sort_by(struct student_for_hire *students, int *res, int size,
