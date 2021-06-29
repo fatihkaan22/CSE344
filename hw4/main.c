@@ -1,539 +1,426 @@
-#include <errno.h>
-#include <fcntl.h>
+#include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
+#include <string.h>
 #include <unistd.h>
 
-#define R "\x1B[31m"
-#define C "\x1B[36m"
-#define G "\x1B[32m"
-#define Y "\x1B[33m"
-#define T "\x1B[0m"
+#include "queue.h"
 
-#define EMPTY 'e'
+// constants
+#define NO_HW_LEFT 'N'
+#define MAX_STUDENT 64
+#define MAX_LINE_LEN 128
+#define QUEUE_SIZE 4
 
-// shared memories
-struct shared_memory *mem;
-int memsize = 0;
-int *citizen_pids;
-int citizen_pids_size;
-int *vaccinator_doses;
-int vaccinator_doses_size;
-int *citizen_no_vaccinated;
-int citizen_no_vaccinated_size;
-int *buffer;
-int buffer_size;
+static volatile sig_atomic_t gotSigint = 0;
+long money;
+struct queue hws;
+sem_t queue_access, queue_empty, queue_full;
+sem_t student_available;
+sem_t thread_h_term;
+bool terminate;
 
-struct shared_memory {
-  sem_t sem, empty, vaccines_available;
-  int novacc1;
-  int novacc2;
-  int bufsize;
-  int next_citizen_idx;
-  int current_tour;
-  bool eof;
-  int no_nurse_terminated;
-  int remaining_citizens;
+enum property { COST, SPEED, QUALITY };
+
+struct student_for_hire {
+  char *name;
+  int q;
+  int s;
+  int c;
+  sem_t available;
+  sem_t sem_busy;
+  bool busy;
+  int no_hw_solved;
 };
 
-static bool gotSIGINT = 0;
-
-void handler(int signum) {
-  switch (signum) {
-  case SIGINT:
-    gotSIGINT = 1;
-    break;
-  default:
-    fprintf(stderr, "handler caught unexpected signal %d\n", signum);
-  }
+static void handler(int sig) {
+  if (sig == SIGINT)
+    gotSigint = 1;
 }
 
-void exit_handler() {
-  munmap(mem, memsize);
-  munmap(citizen_pids, citizen_pids_size);
-  munmap(vaccinator_doses, vaccinator_doses_size);
-  munmap(citizen_no_vaccinated, citizen_no_vaccinated_size);
-  munmap(buffer, buffer_size);
+void usage() {
+  printf("Usage: ./program <homeworkFilePath> <studentsFilePath> <money>\n");
 }
 
-// if exist return index, -1 otherwise
-bool find(int item, int *arr, int size) {
-  for (int i = 0; i < size; ++i) {
-    if (arr[i] == item)
-      return i;
+int sleep_time(int speed) { return 6 - speed; }
+
+enum property get_enum(char c) {
+  switch (c) {
+  case 'C':
+    return COST;
+  case 'S':
+    return SPEED;
+  case 'Q':
+    return QUALITY;
   }
   return -1;
 }
 
-char *get_ordinal(int value) {
-  char *ordinals[] = {"st", "nd", "rd", "th"};
-  value %= 100;
-  if (3 < value && value < 21)
-    return ordinals[3];
-  switch (value % 10) {
-  case 1:
-    return ordinals[0];
-  case 2:
-    return ordinals[1];
-  case 3:
-    return ordinals[2];
-  default:
-    return ordinals[3];
-  }
-}
-
-void log_nurse(int id, int pid, char vaccine, int total1, int total2) {
-#ifdef DEBUG
-  printf(Y);
-#endif
-  printf("Nurse %d (pid=%d) has brought vaccine %c: the clinic has %d vaccine1 "
-         "and %d vaccine2.\n",
-         id, pid, vaccine, total1, total2);
-#ifdef DEBUG
-  printf(T);
-#endif
-  fflush(stdout);
-}
-
-void log_nurse_done() {
-  puts("Nurses have carried all vaccines to the buffer, terminating.");
-  fflush(stdout);
-}
-
-void log_citizen(int id, int pid, int times, int vacc1, int vacc2,
-                 int remaining) {
-#ifdef DEBUG
-  printf(C);
-#endif
-  if (remaining == -1)
-    printf(
-        "Citizen %d (pid=%d) is vaccinated for the %d%s time: the clinic has "
-        "%d vaccine1 and %d vaccine2. \n",
-        id, pid, times, get_ordinal(times), vacc1, vacc2);
-  else
-    printf(
-        "Citizen %d (pid=%d) is vaccinated for the %d%s time: the clinic has "
-        "%d vaccine1 and %d vaccine2. The citizen is leaving. Remaining "
-        "citizens to vaccinate: %d\n",
-        id, pid, times, get_ordinal(times), vacc1, vacc2, remaining);
-#ifdef DEBUG
-  printf(T);
-#endif
-  fflush(stdout);
-}
-
-void log_citizen_done() {
-  puts("All citizens have been vacinated.");
-  fflush(stdout);
-}
-
-void log_welcome(int c, int t) {
-  printf("Welcome to GTU344 clinic. Number of citizens to vaccinate "
-         "c=%d with t=%d doeses.\n",
-         c, t);
-  fflush(stdout);
-}
-
-void log_vaccinator_done(int id, int pid, int nodose) {
-  printf("Vaccinator %d (pid=%d) vaccinated %d doses. ", id, pid, nodose);
-  fflush(stdout);
-}
-
-void log_vaccinator(int id, int pid, int citizen_pid) {
-#ifdef DEBUG
-  printf(G);
-#endif
-  printf("Vaccinator %d (pid=%d) is inviting citizen pid=%d to the clinic.\n",
-         id, pid, citizen_pid);
-#ifdef DEBUG
-  printf(T);
-#endif
-  fflush(stdout);
-}
-
-int add_vaccine(char c) {
-  for (int i = 0; i < buffer_size; ++i) {
-    if (buffer[i] == EMPTY)
-      buffer[i] = c;
-  }
-  switch (c) {
-  case '1':
-    mem->novacc1++;
-    break;
-  case '2':
-    mem->novacc2++;
-    break;
-  default:
-    fprintf(stderr, "Unexpected character: %c\n", c);
-  }
-  return 0;
-}
-
-int remove_vaccines() {
-  for (int i = 0; i < buffer_size; ++i)
-    if (buffer[i] == '1') {
-      buffer[i] = EMPTY;
-      break;
+struct student_for_hire *get_first_available(struct student_for_hire *arr,
+                                             int nostudent, int *priorities) {
+  for (int i = 0; i < nostudent; ++i) {
+    struct student_for_hire *s = &arr[priorities[i]];
+    sem_wait(&s->sem_busy);
+    bool busy = !s->busy;
+    sem_post(&s->sem_busy);
+    if (busy) {
+      return s;
     }
-  for (int i = 0; i < buffer_size; ++i)
-    if (buffer[i] == '2') {
-      buffer[i] = EMPTY;
-      break;
-    }
-  mem->novacc1--;
-  mem->novacc2--;
-  return 0;
+  }
+  // all busy
+  // sanity check
+  fprintf(stderr, "Something went wrong: waiting on semaphore "
+                  "'student_available' doesn't work.");
+  exit(EXIT_FAILURE);
+  return NULL;
 }
 
-void init_mem(int bufsize, int nocitizens) {
-  mem->bufsize = bufsize;
-  mem->novacc1 = mem->novacc2 = 0;
-  mem->next_citizen_idx = 0;
-  mem->current_tour = 0;
-  mem->eof = false;
-  mem->no_nurse_terminated = 0;
-  mem->remaining_citizens = nocitizens;
-  if (sem_init(&mem->sem, 1, 1) == -1) {
-    perror("sem_init");
-    exit(EXIT_FAILURE);
+void *thread_h(void *filepath) {
+  if (pthread_detach(pthread_self()) != 0) {
+    fprintf(stderr, "pthread_detach error\n");
   }
-  if (sem_init(&mem->empty, 1, bufsize) == -1) {
-    perror("sem_init");
-    exit(EXIT_FAILURE);
-  }
-  if (sem_init(&mem->vaccines_available, 1, 0) == -1) {
-    perror("sem_init");
-    exit(EXIT_FAILURE);
-  }
-}
-
-int strtoint(char *str) {
-  int res;
-  char *endptr;
-  errno = 0;
-  res = strtol(str, &endptr, 10);
-  if (errno != 0) {
-    perror("strtol");
-    exit(EXIT_FAILURE);
-  }
-  if (endptr == str) {
-    fprintf(stderr, "No digits were found\n");
-    exit(EXIT_FAILURE);
-  }
-  return res;
-}
-
-// producer
-int nurse(int id, int fd) {
+  FILE *hwfile = fopen((char *)filepath, "r");
   char c;
-  int nbytes;
-  int novacc_this, novacc_other;
-  while (!mem->eof) {
-    if (sem_wait(&mem->empty) == -1) {
-      perror("sem_wait()");
-      exit(EXIT_FAILURE);
-    }
-    if (mem->eof)
+  while ((c = fgetc(hwfile)) != EOF) {
+    if (c != 'C' && c != 'S' && c != 'Q')
       break;
-    if (sem_wait(&mem->sem) == -1) {
-      perror("sem_wait()");
-      exit(EXIT_FAILURE);
-    }
-    nbytes = read(fd, &c, 1);
-    if (nbytes == -1) {
-      perror("read");
-      exit(EXIT_FAILURE);
-    } else if (nbytes == 0) {
-      mem->eof = true;
-    } else if (c == '1' || c == '2') {
-      add_vaccine(c);
-      log_nurse(id, getpid(), c, mem->novacc1, mem->novacc2);
-      // if there are enough amount of vaccines, post semaphore
-      novacc_this = (c == '1') ? mem->novacc1 : mem->novacc2;
-      novacc_other = (c == '1') ? mem->novacc2 : mem->novacc1;
-    }
+    sem_wait(&queue_empty);
+    sem_wait(&queue_access);
+    if (terminate)
+      break;
+    offer(&hws, c);
+    sem_post(&queue_access);
+    sem_post(&queue_full);
+    printf("H has new homework %c; remaining money is %ld\n", c, money);
+  }
 
-    if (sem_post(&mem->sem) == -1) {
-      perror("sem_post()");
-      exit(EXIT_FAILURE);
-    }
-    if (!mem->eof && novacc_this <= novacc_other) {
-      if (sem_post(&mem->vaccines_available) == -1) {
-        perror("sem_post()");
-        exit(EXIT_FAILURE);
+  if (!terminate) {
+    // notify no homeworks left
+    sem_wait(&queue_empty);
+    sem_wait(&queue_access);
+    offer(&hws, NO_HW_LEFT);
+    sem_post(&queue_access);
+    sem_post(&queue_full);
+    puts("H has no other homework, terminating.");
+  }
+
+  if (fclose(hwfile) == -1) {
+    perror("fclose()");
+  }
+  sem_post(&thread_h_term);
+  return NULL;
+}
+
+void *thread_student_for_hire(void *args) {
+  struct student_for_hire *s = (struct student_for_hire *)args;
+
+  while (1) {
+    if (!terminate && !s->busy)
+      printf("%s waiting for a homework\n", s->name);
+    sem_wait(&s->available);
+    if (terminate)
+      break;
+    sleep(sleep_time(s->s));
+    sem_wait(&s->sem_busy);
+    s->busy = false;
+    sem_post(&s->sem_busy);
+    sem_post(&student_available);
+  }
+#ifdef DEBUG
+  printf("%s end\n", s->name);
+#endif
+}
+
+void sort_by(struct student_for_hire *students, int *res, int size,
+             enum property p) {
+  for (int i = 0; i < size; ++i) {
+    res[i] = -1;
+  }
+  for (int i = 0; i < size; ++i) {
+    int idx = 0;
+    for (int j = 0; j < size; ++j) {
+      if (i == j)
+        continue;
+      int val_i, val_j;
+      switch (p) {
+      case SPEED:
+        val_i = students[i].s;
+        val_j = students[j].s;
+        break;
+      case COST: // the higher the less priority
+        val_i = students[j].c;
+        val_j = students[i].c;
+        break;
+      case QUALITY:
+        val_i = students[i].q;
+        val_j = students[j].q;
+        break;
       }
+      if (val_i < val_j)
+        idx++;
     }
+    while (res[idx] != -1)
+      idx++;
+    res[idx] = i;
   }
-  if (sem_post(&mem->empty) == -1) {
-    perror("sem_post()");
-    exit(EXIT_FAILURE);
-  }
-  /* #ifdef DEBUG */
-  /*   printf(R "nurse %d terminated\n" T, id); */
-  /* #endif */
-  mem->no_nurse_terminated++;
-  return 0;
-}
-
-// consumer
-int vaccinator(int id, int nocitizens, int noshots,
-               int c_pipes[nocitizens][2]) {
-  int nodose = 0, v1, v2, remaining, c_no_vacc;
-  char msg = 'x'; // message to send from fifo
-  // wait until both vaccinates are available
-  while (mem->current_tour != noshots) {
-    if (sem_wait(&mem->vaccines_available) == -1) {
-      perror("sem_wait()");
-      exit(EXIT_FAILURE);
-    }
-    if (mem->current_tour == noshots)
-      break;
-    if (sem_wait(&mem->sem) == -1) {
-      perror("sem_wait()");
-      exit(EXIT_FAILURE);
-    }
-    // in critcal section:
-    // - remove vaccines from buffer
-    // - select citizen to be vaccinated
-    remove_vaccines();
-    v1 = mem->novacc1;
-    v2 = mem->novacc2;
-    int citizen_idx = mem->next_citizen_idx;
-    mem->next_citizen_idx++;
-    if (mem->next_citizen_idx == nocitizens) {
-      mem->current_tour++;
-      mem->next_citizen_idx = 0;
-    }
-    c_no_vacc = ++citizen_no_vaccinated[citizen_idx];
-    if (citizen_no_vaccinated[citizen_idx] == noshots)
-      remaining = --mem->remaining_citizens;
-    else
-      remaining = -1;
-    log_vaccinator(id, getpid(), citizen_pids[citizen_idx]);
-    log_citizen(citizen_idx + 1, citizen_pids[citizen_idx], c_no_vacc, v1, v2,
-                remaining);
-    if (sem_post(&mem->sem) == -1) {
-      perror("sem_post()");
-      exit(EXIT_FAILURE);
-    }
-    if (sem_post(&mem->empty) == -1) {
-      perror("sem_post()");
-      exit(EXIT_FAILURE);
-    }
-
-    // invite citizen
-    if (write(c_pipes[citizen_idx][1], &msg, sizeof(char)) == -1) {
-      perror("write()");
-      exit(EXIT_FAILURE);
-    }
-
-    nodose++;
-  }
-
-  sem_post(&mem->vaccines_available);
-
-  /* #ifdef DEBUG */
-  /*   printf(R "vaccinator %d terminated\n" T, id); */
-  /* #endif */
-  vaccinator_doses[id - 1] = nodose;
-  return 0;
-}
-
-int citizen(int id, int noshots, int c_pipes[2]) {
-  char msg;
-  for (int i = 0; i < noshots; ++i) {
-    read(c_pipes[0], &msg, sizeof(char));
-  }
-
-  if (close(c_pipes[0]) == -1)
-    perror("close");
-  /* #ifdef DEBUG */
-  /*   printf(R "citizen %d terminated\n" T, id); */
-  /*   fflush(stdout); */
-  /* #endif */
-  return 0;
-}
-
-void usage() {
-  printf("Usage: ./program –n 3 –v 2 –c 3 –b 11 –t 3 –i inputfilepath\n\n"
-         "n >= 2      the number of nurses (integer)\n"
-         "v >= 2      the number of vaccinators (integer)\n"
-         "c >= 3      the number of citizens (integer)\n"
-         "b >= tc+1   size of the buffer (integer)\n"
-         "t >= 1      how many times each citizen must receive the 2 shots "
-         "(integer)\n"
-         "i           pathname of the input file\n");
 }
 
 int main(int argc, char *argv[]) {
-  int opt;
-  int nonurses = -1;
-  int novaccinators = -1;
-  int nocitizens = -1;
-  int bufsize = -1;
-  int noshots = -1;
-  char *inputfilepath = NULL;
-
-  while ((opt = getopt(argc, argv, "n:v:c:b:t:i:")) != -1) {
-    switch (opt) {
-    case 'n':
-      nonurses = strtoint(optarg);
-      break;
-    case 'v':
-      novaccinators = strtoint(optarg);
-      break;
-    case 'c':
-      nocitizens = strtoint(optarg);
-      break;
-    case 'b':
-      bufsize = strtoint(optarg);
-      break;
-    case 't':
-      noshots = strtoint(optarg);
-      break;
-    case 'i':
-      inputfilepath = optarg;
-      break;
-    default:
-      usage();
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  // all arguements are required
-  if (nonurses == -1 || novaccinators == -1 || nocitizens == -1 ||
-      bufsize == -1 || noshots == -1 || inputfilepath == NULL) {
+  if (argc != 4) {
+    fprintf(stderr, "Invalid number of arguements\n");
     usage();
+    exit(EXIT_SUCCESS);
+  }
+
+  // signal handler
+  signal(SIGINT, &handler);
+
+  const int queue_size = QUEUE_SIZE;
+  char *endptr;
+  money = strtol(argv[3], &endptr, 10); // TODO: check return
+  if (endptr == argv[3]) {
+    fprintf(stderr, "Error: couldn't parse to int: %s\n", argv[3]);
+    exit(EXIT_SUCCESS);
+  }
+  long initial_money = money;
+  char *hwfilepath = argv[1];
+  init_queue(&hws, queue_size);
+  // TODO: check
+  if (sem_init(&queue_access, 0, 1) == -1) {
+    perror("sem_init()");
+    exit(EXIT_FAILURE);
+  }
+  if (sem_init(&queue_empty, 0, queue_size) == -1) {
+    perror("sem_init()");
+    exit(EXIT_FAILURE);
+  }
+  if (sem_init(&queue_full, 0, 0) == -1) {
+    perror("sem_init()");
+    exit(EXIT_FAILURE);
+  }
+  if (sem_init(&thread_h_term, 0, 0) == -1) {
+    perror("sem_init()");
     exit(EXIT_FAILURE);
   }
 
-  if (bufsize < noshots * nocitizens + 1) {
-    fprintf(stderr, "buffer size is %d, less than noshots * nocitizens + 1 \n",
-            bufsize);
-    usage();
+  pthread_t h;
+  if (pthread_create(&h, NULL, &thread_h, hwfilepath) != 0) { // hwfile
+    perror("pthread_create()");
     exit(EXIT_FAILURE);
   }
 
-  log_welcome(nocitizens, noshots);
-  int noprocesses = nonurses + novaccinators + nocitizens;
-  atexit(exit_handler);
-  // init buffer
-  memsize = sizeof(struct shared_memory); // vaccines
-  mem = mmap(NULL, memsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
-             -1, 0);
-  citizen_pids_size = nocitizens * sizeof(int);
-  citizen_pids = mmap(NULL, citizen_pids_size, PROT_READ | PROT_WRITE,
-                      MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  vaccinator_doses_size = novaccinators * sizeof(int);
-  vaccinator_doses = mmap(NULL, vaccinator_doses_size, PROT_READ | PROT_WRITE,
-                          MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  citizen_no_vaccinated_size = nocitizens * sizeof(int);
-  citizen_no_vaccinated =
-      mmap(NULL, citizen_no_vaccinated_size, PROT_READ | PROT_WRITE,
-           MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  buffer_size = bufsize * sizeof(char);
-  buffer = mmap(NULL, buffer_size, PROT_READ | PROT_WRITE,
-                MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  init_mem(bufsize, nocitizens);
-  if (mem == MAP_FAILED) {
-    perror("mmap()");
+  FILE *studentfile = fopen(argv[2], "r");
+  if (studentfile == NULL) {
+    fprintf(stderr, "Cannot open file: %s\n", argv[2]);
     exit(EXIT_FAILURE);
   }
 
-  pid_t nurse_pids[nonurses];
-  pid_t vaccinator_pids[novaccinators];
+  char line[MAX_LINE_LEN]; // max length of one line
+  struct student_for_hire students[MAX_STUDENT];
+  int nostudent = 0;
 
-  int fd = open(inputfilepath, O_RDONLY, 0666);
-  if (fd == -1) {
-    perror("open()");
+  // read from file
+  while (fgets(line, 128, studentfile) != NULL) {
+    struct student_for_hire s;
+    int name_len = strcspn(line, " ") + 1;
+    s.name = malloc(sizeof(char) * name_len); // TODO: check
+    if (s.name == NULL) {
+      perror("malloc");
+      exit(EXIT_FAILURE);
+    }
+    strncpy(s.name, line, name_len);
+    s.name[name_len - 1] = '\0';
+    char *end;
+    s.q = strtol(line + name_len, &end, 10);
+    s.s = strtol(end, &end, 10);
+    s.c = strtol(end, &end, 10);
+    students[nostudent++] = s;
+  }
+  if (fclose(studentfile) == -1) {
+    perror("fclose()");
+  }
+
+  if (sem_init(&student_available, 0, nostudent) == -1) {
+    perror("sem_init()");
     exit(EXIT_FAILURE);
   }
 
-  for (int i = 0; i < nonurses; ++i) {
-    switch (nurse_pids[i] = fork()) {
-    case -1:
-      perror("fork");
-      exit(EXIT_FAILURE);
-    case 0:
-      nurse(i + 1, fd);
-      exit(EXIT_SUCCESS);
-    }
-  }
-
-  int c_pipes[nocitizens][2];
-  int c_pid;
-  for (int i = 0; i < nocitizens; ++i) {
-    citizen_no_vaccinated[i] = 0;
-    if (pipe(c_pipes[i]) == -1) {
-      perror("pipe");
+  // create all student threads
+  pthread_t student_threads[nostudent];
+  for (int i = 0; i < nostudent; ++i) {
+    if (sem_init(&students[i].sem_busy, 0, 1) == -1) {
+      perror("sem_init()");
       exit(EXIT_FAILURE);
     }
-    switch (c_pid = fork()) {
-    case -1:
-      perror("fork");
+    students[i].no_hw_solved = 0;
+    students[i].busy = false;
+    // student will wait on this semaphore
+    if (sem_init(&students[i].available, 0, 0) == -1) {
+      perror("sem_init()");
       exit(EXIT_FAILURE);
-    case 0:
-      if (close(c_pipes[i][1]) == -1) {
-        perror("close()");
-        exit(EXIT_FAILURE);
-      }
-      citizen(i + 1, noshots, c_pipes[i]);
-      exit(EXIT_SUCCESS);
-    default:
-      if (close(c_pipes[i][0]) == -1) {
-        perror("close()");
-        exit(EXIT_FAILURE);
-      }
-      citizen_pids[i] = c_pid;
     }
-  }
 
-  for (int i = 0; i < novaccinators; ++i) {
-    switch (vaccinator_pids[i] = fork()) {
-    case -1:
-      perror("fork");
+    if (pthread_create(&student_threads[i], NULL, &thread_student_for_hire,
+                       &students[i]) != 0) {
+      perror("pthread_create()");
       exit(EXIT_FAILURE);
-    case 0:
-      vaccinator(i + 1, nocitizens, noshots, c_pipes);
-      exit(EXIT_SUCCESS);
     }
   }
 
-  // wait for child processes to terminate
-  int status;
-  pid_t pid;
-  for (int i = 0; i < noprocesses; ++i) {
-    pid = wait(&status);
-    if (pid == -1) {
-      perror("wait");
-    } else if (mem->no_nurse_terminated == nonurses) {
-      mem->no_nurse_terminated++; // to avoid print multiple times
-      log_nurse_done();
-    } else if (mem->remaining_citizens == 0) {
-      mem->remaining_citizens--; // to avoid print multiple times
-      log_citizen_done();
+  // print students
+  printf("%d students-for-hire threads have been created.\n", nostudent);
+  puts("Name Q S C");
+  for (int i = 0; i < nostudent; ++i) {
+    printf("%s %d %d %d\n", students[i].name, students[i].q, students[i].s,
+           students[i].c);
+  }
+
+  // sorted arrays
+  int by_speed[nostudent], by_quality[nostudent], by_cost[nostudent];
+
+  sort_by(students, by_speed, nostudent, SPEED);
+  sort_by(students, by_quality, nostudent, QUALITY);
+  sort_by(students, by_cost, nostudent, COST);
+
+  int total_hws = 0;
+  while (1) {
+    if (gotSigint) {
+      puts("Termination signal received, closing.");
+      break;
+    }
+
+    if (sem_wait(&queue_full) == -1) {
+      perror("sem_wait()");
+      exit(EXIT_FAILURE);
+    }
+    if (sem_wait(&queue_access) == -1) {
+      perror("sem_wait()");
+      exit(EXIT_FAILURE);
+    }
+    char hw = poll(&hws);
+    if (sem_post(&queue_access) == -1) {
+      perror("sem_post()");
+      exit(EXIT_FAILURE);
+    }
+    if (sem_post(&queue_empty) == -1) {
+      perror("sem_post()");
+      exit(EXIT_FAILURE);
+    }
+
+    if (hw == NO_HW_LEFT) {
+      puts("No more homeworks left or coming in, closing.");
+      break;
+    }
+
+    int *by_priority;
+    switch (get_enum(hw)) {
+    case SPEED:
+      by_priority = by_speed;
+      break;
+    case COST:
+      by_priority = by_cost;
+      break;
+    case QUALITY:
+      by_priority = by_quality;
+    }
+    // wait if all students are busy
+    if (sem_wait(&student_available) == -1) {
+      perror("sem_wait()");
+      exit(EXIT_FAILURE);
+    }
+
+    struct student_for_hire *s =
+        get_first_available(students, nostudent, by_priority);
+    // notify student
+    /* sem_wait(&sem_money); */
+    if (money < s->c) {
+      puts("H has no more money for homeworks, terminating.");
+      break;
+    }
+    money -= s->c;
+    /* sem_post(&sem_money); */
+    printf("%s is solving homework %c for %d. H has %ldTL left.\n", s->name, hw,
+           s->c, money);
+    s->no_hw_solved++;
+
+    if (sem_wait(&s->sem_busy) == -1) {
+      perror("sem_wait()");
+      exit(EXIT_FAILURE);
+    }
+    s->busy = true;
+    if (sem_post(&s->sem_busy) == -1) {
+      perror("sem_wait()");
+      exit(EXIT_FAILURE);
+    }
+
+    if (sem_post(&s->available) == -1) {
+      perror("sem_post()");
+      exit(EXIT_FAILURE);
+    }
+
+    total_hws++;
+  }
+
+  terminate = true;
+
+  for (int i = 0; i < nostudent; ++i) {
+    if (sem_post(&students[i].available) == -1) {
+      perror("sem_post()");
+      exit(EXIT_FAILURE);
+    }
+  }
+  if (sem_post(&queue_empty) == -1) {
+    perror("sem_post()");
+    exit(EXIT_FAILURE);
+  }
+
+  for (int i = 0; i < nostudent; ++i) {
+    if (pthread_join(student_threads[i], NULL) != 0) {
+      fprintf(stderr, "Error: pthread_join\n");
+      exit(EXIT_FAILURE);
     }
   }
 
-  for (int i = 0; i < novaccinators; ++i) {
-    log_vaccinator_done(i + 1, vaccinator_pids[i], vaccinator_doses[i]);
+  puts("Homeworks sovled and money made by the students:");
+  int sum = 0;
+  int hwsum = 0;
+  for (int i = 0; i < nostudent; ++i) {
+    printf("%s %d %d\n", students[i].name, students[i].no_hw_solved,
+           students[i].no_hw_solved * students[i].c);
+    sum += students[i].c * students[i].no_hw_solved;
+    hwsum += students[i].no_hw_solved;
   }
-  puts("The clinic is now close. Stay healthy.");
 
-  for (int i = 0; i < nocitizens; ++i) {
-    if (close(c_pipes[i][1]) == -1)
-      perror("close");
+  printf("Total cost for %d homeworks %ldTL.\n", total_hws,
+         initial_money - money);
+  printf("Total cost for %d homeworks %dTL.\n", hwsum, sum);
+  printf("Money left at H's account: %ldTL.\n", money);
+
+  // free
+  for (int i = 0; i < nostudent; ++i) {
+    free(students[i].name);
+    if (sem_destroy(&students[i].available) == -1)
+      perror("sem_destroy");
+    if (sem_destroy(&students[i].sem_busy) == -1)
+      perror("sem_destroy");
   }
-  munmap(mem, memsize);
-  munmap(citizen_pids, citizen_pids_size);
-  munmap(vaccinator_doses, vaccinator_doses_size);
-  munmap(citizen_no_vaccinated, citizen_no_vaccinated_size);
-  munmap(buffer, buffer_size);
+  if (sem_destroy(&queue_empty) == -1)
+    perror("sem_destroy");
+  if (sem_destroy(&queue_access) == -1)
+    perror("sem_destroy");
+  if (sem_destroy(&queue_full) == -1)
+    perror("sem_destroy");
+  if (sem_destroy(&student_available) == -1)
+    perror("sem_destroy");
+  free_queue(&hws);
 
+  // wait for h to terminate
+  if (sem_wait(&thread_h_term) == -1) {
+    perror("sem_wait()");
+    exit(EXIT_FAILURE);
+  }
   return 0;
 }
