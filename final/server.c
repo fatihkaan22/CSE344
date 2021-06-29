@@ -435,7 +435,7 @@ int main(int argc, char *argv[]) {
 
   if (single_instance() != 0)
     exit(EXIT_FAILURE);
-  become_daemon();
+  /* become_daemon(); */
   if (single_instance() != 0) 
     exit(EXIT_FAILURE);
 
