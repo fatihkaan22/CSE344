@@ -1,0 +1,261 @@
+% Created 2021-06-10 Thu 04:42
+% Intended LaTeX compiler: pdflatex
+\documentclass[a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{grffile}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{textcomp}
+\usepackage{amssymb}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\documentclass{article}
+\usepackage{here}
+\usepackage{xcolor}
+\usepackage[margin=3.0cm]{geometry}
+\usepackage{amsmath}
+\usepackage{parskip}
+\renewcommand\arraystretch{1.4}
+\usepackage[margin=1in]{geometry}
+\usepackage{minted}
+\usepackage{multicol}
+\definecolor{bg}{rgb}{0.95,0.95,0.95}
+\newminted{c}{fontsize=\footnotesize,frame=single,framesep=2mm}
+\newminted{text}{breaklines,fontsize=\footnotesize,frame=single,framesep=2mm}
+\author{Fatih Kaan Salgır - 171044009}
+\date{}
+\title{CSE344 - System Programming - Final Report}
+\hypersetup{
+ pdfauthor={Fatih Kaan Salgır - 171044009},
+ pdftitle={CSE344 - System Programming - Final Report},
+ pdfkeywords={},
+ pdfsubject={},
+ pdfcreator={Emacs 27.2 (Org mode 9.4.5)}, 
+ pdflang={English}}
+\begin{document}
+
+\maketitle
+
+\section*{Design Explanation}
+\label{sec:org6f83187}
+
+\subsection*{Synchronization}
+\label{sec:org15a95e4}
+
+\subsubsection*{Main Thread \& Worker Threads}
+\label{sec:orga893d8e}
+Main thread creates the worker threads, accepts the incoming connection from clients and put it into \texttt{client\_queue}.
+As the worker threads are created, they must wait for \texttt{client\_queue} to be filled, if the queue is empty.
+Producer \& consumer paradigm is used to solve the problem. However the main thread will not wait for the queue to be empty. Instead, it is going to ignore the requset. Because main thread shouldn't be blocked, it must wait for new connections to arrive.
+
+\begin{multicols}{2}
+\begin{ccode}
+// Producer - main thread
+while (true) {
+  int client_fd =
+      accept(server_fd,
+      (struct sockaddr *)&client_addr,
+      &addrlen);
+  pthread_mutex_lock(&pool.lock);
+  offer(&client_queue, client_fd);
+  pthread_cond_broadcast(&pool.cond);
+  pthread_mutex_unlock(&pool.lock);
+}
+\end{ccode}
+
+\begin{ccode}
+// Consumer - worker threads
+while(true) {
+  pthread_mutex_lock(&pool.lock);
+  no_busy--;
+  while (client_queue.size == 0) 
+    pthread_cond_wait(&pool.cond, &pool.lock);
+  int client_fd = poll(&client_queue);
+  no_busy++;
+  pthread_mutex_unlock(&pool.lock);
+  // fulfill request and respond
+}
+\end{ccode}
+\end{multicols}
+
+\subsubsection*{Readers \& Writers}
+\label{sec:org2ab982a}
+Readers \& writers paradigm is used to synchronize database access on \texttt{SELECT} or \texttt{UPDATE}. 
+After the client connection dispatches to thread, client sends the requested query to thread.
+Thread parses the query, and according to type of the query (\texttt{SELECT} or \texttt{UPDATE}), it will behave as either reader or writer.
+Condition variables  (\texttt{ok\_to\_read}, \texttt{ok\_to\_read}), state variables (\texttt{no\_active\_readers}, \texttt{no\_active\_writers}, \texttt{no\_waiting\_readers}, \texttt{no\_waiting\_writers}) and the mutex (\texttt{rw\_lock}) created as global variables.
+
+\subsection*{Dataset}
+\label{sec:org071e75a}
+When the server starts dataset loads into memory. Since add and remove operations are not supported, the size will be static. Therefre array structure is  prefered to store dataset.
+
+In \texttt{csv\_reader.h};
+
+\begin{ccode}
+typedef char **record;
+
+struct sql_table {
+  size_t size;
+  record header;
+  record *records;
+  size_t no_cols;
+};
+\end{ccode}
+
+\begin{itemize}
+\item Both row and column sizes are static, defined in \texttt{csv\_read.h}.
+\end{itemize}
+
+\subsection*{Query}
+\label{sec:org8288056}
+
+\subsubsection*{Parsing the query}
+\label{sec:org0cf4ea0}
+Query string tokenized and read into the \texttt{query} struct.
+During the parsing, different number of tokens can be read, or not.
+If the query string is not valid, \texttt{parse\_query()} function prints error message and returns -1.
+In order make the error checking more readable, \texttt{SET\_IDX()} macro is used. 
+
+\begin{ccode} 
+enum sql_command { UNKNOWN = 0, SELECT, SELECT_DISTINCT, UPDATE };
+
+typedef struct pair {
+  char *key;
+  char *value;
+} pair;
+
+typedef struct query {
+  enum sql_command cmd;
+  bool distinct;
+  char *columns[MAX_F];
+  pair column_set[MAX_F];
+  pair column_filter[MAX_F];
+} query;
+\end{ccode}
+
+\begin{itemize}
+\item Queries with '\texttt{,}' character might not work properly, since the delimeter is '\texttt{,}' is used to tokenize query string.
+\item String compare operations are sensitive to '\texttt{"}' character.
+\end{itemize}
+
+\subsubsection*{Running the query}
+\label{sec:org88a1620}
+\texttt{run\_query()} function returns the resulting records as an array of indices and the size of the array. Worker thread iterates over the array, reads a row into a buffer (\texttt{sprint\_row()}), sends the buffer to client, repeats for every record in the array.
+
+\subsection*{Socket Communication}
+\label{sec:orgeca1b0a}
+\begin{itemize}
+\item Backlog arguement of \texttt{listen()} call, set to \texttt{SOMAXCONN}, which is maximum number of limit defined in \texttt{<sys/socket.h>}.
+\item In case client closes the socket, the server gets \texttt{SIGPIPE} signal. It is ignored to prevent server from terminating when the signal arrives.
+\end{itemize}
+
+\subsubsection*{Preventing Data Loss}
+\label{sec:org88c46eb}
+It may happens that server cannot send the whole buffer at once. \texttt{write()} and \texttt{read()} functions returns number of bytes sent/read. To make sure that the data is sent successfuly, the worker thread first sends the size of the buffer, then loops over \texttt{write()} until all the bytes are sent. Similirlay the client will read the buffer size first and then the respond string.
+
+For this purpose; \texttt{send\_int()}, \texttt{receive\_int()}, \texttt{send\_line()}, \texttt{receive\_line()} functions are implemented in \texttt{socket\_io.c}.
+
+\subsection*{Single Instance}
+\label{sec:org9c1e540}
+\texttt{/tmp/cse344-171044009.pid} file is created and tred to obtain file lock. If the program cannot get the lock, that means there is already an instance running. In this case it will print a message and exit.
+
+\subsection*{Handling SIGINT}
+\label{sec:org1660c0c}
+In case of receiving \texttt{SIGINT}, handler function is sets the global variable \texttt{got\_sigint}. Since \texttt{accept()} calls returns on signal arrives, the threads checks the  variable on every iteration, and if it is set the loop breaks.  Main thread broadcast on conditional variable to let other threds know \texttt{SIGINT} arrived. Resources are freed in exit handler.
+
+\subsection*{Running \& Test Cases}
+\label{sec:org4c014ef}
+\begin{itemize}
+\item \texttt{fprintf} buffer is disabled, to be able to load the contents of the file instantly.
+\end{itemize}
+
+Program tested with different queries and tables with the valgrind to check memory leaks. According the output of the valgrind on both client and the server side, "All heap blocks were freed -- no leaks are possible".
+
+Server;
+
+\begin{textcode}
+[2021-06-10 04:35:53] Executing with parameters:
+[2021-06-10 04:35:53] 	 -p 8082
+[2021-06-10 04:35:53] 	 -o ./logfile
+[2021-06-10 04:35:53] 	 -l 3
+[2021-06-10 04:35:53] 	 -d machine.csv
+[2021-06-10 04:35:53] Loading dataset...
+[2021-06-10 04:35:53] Dataset loaded in 0.000809 seconds with 201 records.
+[2021-06-10 04:35:53] A pool of 3 threads has been created
+[2021-06-10 04:35:53] Thread #0: waiting for connection
+[2021-06-10 04:35:53] Thread #1: waiting for connection
+[2021-06-10 04:35:53] Thread #2: waiting for connection
+[2021-06-10 04:36:17] A connection has been delegated to thread id #0
+[2021-06-10 04:36:17] Thread #0: received query 'SELECT * FROM TABLE;'
+[2021-06-10 04:36:17] Thread #0: query completed, 201 records have been returned.
+[2021-06-10 04:36:17] Thread #0: received query 'UPDATE TABLE SET Period='-1' WHERE Series_reference='BDCQ.SEA1AA';'
+[2021-06-10 04:36:18] Thread #0: query completed, 38 records have been returned.
+[2021-06-10 04:36:18] Thread #0: received query 'SELECT DISTINCT Series_reference,Series_title_5 FROM TABLE;'
+[2021-06-10 04:36:18] Thread #0: query completed, 8 records have been returned.
+[2021-06-10 04:36:18] Thread #0: waiting for connection
+[2021-06-10 04:36:29] A connection has been delegated to thread id #2
+[2021-06-10 04:36:29] Thread #2: received query 'UPDATE TABLE SET Period='-1' WHERE Series_reference='BDCQ.SEA1AA';'
+[2021-06-10 04:36:29] Thread #2: query completed, 38 records have been returned.
+[2021-06-10 04:36:29] Thread #2: waiting for connection
+[2021-06-10 04:36:44] A connection has been delegated to thread id #1
+[2021-06-10 04:36:44] Thread #1: received query 'SELECT DISTINCT Series_reference,Series_title_5 FROM TABLE;'
+[2021-06-10 04:36:44] Thread #1: query completed, 8 records have been returned.
+[2021-06-10 04:36:44] Thread #1: waiting for connection
+\end{textcode}
+
+\newpage
+
+Client-1;
+
+\begin{textcode}
+[2021-06-10 04:36:17] Client-1 connecting 127.0.0.1:8082
+[2021-06-10 04:36:17] Client-1 connected and sending query: 'SELECT * FROM TABLE;'
+[2021-06-10 04:36:17] Server's response to Client-1 is 201 records, and arrived in 0.500690 seconds
+[2021-06-10 04:36:17] 0 Series_reference | Period | Data_value | Suppressed | STATUS | UNITS | Magnitude | Subject | Group | Series_title_1 | Series_title_2 | Series_title_3 | Series_title_4 | Series_title_5 | 
+[2021-06-10 04:36:17] 1 BDCQ.SEA1AA | 2011.06 | 80078 | (null) | F | Number | 0 | Business Data Collection - BDC | Industry by employment variable | Filled jobs | "Agriculture Forestry and Fishing" | Actual | (null) | (null) | 
+...(truncated)
+[2021-06-10 04:36:17] Client-1 connected and sending query: 'UPDATE TABLE SET Period='-1' WHERE Series_reference='BDCQ.SEA1AA';'
+[2021-06-10 04:36:18] Server's response to Client-1 is 38 records, and arrived in 0.500673 seconds
+...
+[2021-06-10 04:36:18] Client-1 connected and sending query: 'SELECT DISTINCT Series_reference,Series_title_5 FROM TABLE;'
+[2021-06-10 04:36:18] Server's response to Client-1 is 8 records, and arrived in 0.500875 seconds
+...
+[2021-06-10 04:36:18] Total of 3 queries were executed, client is terminating.
+\end{textcode}
+
+
+Client-2;
+
+\begin{textcode}
+2021-06-10 04:36:29] Client-2 connecting 127.0.0.1:8082
+[2021-06-10 04:36:29] Client-2 connected and sending query: 'UPDATE TABLE SET Period='-1' WHERE Series_reference='BDCQ.SEA1AA';'
+[2021-06-10 04:36:29] Server's response to Client-2 is 38 records, and arrived in 0.500790 seconds
+[2021-06-10 04:36:29] 0 Series_reference | Period | Data_value | Suppressed | STATUS | UNITS | Magnitude | Subject | Group | Series_title_1 | Series_title_2 | Series_title_3 | Series_title_4 | Series_title_5 | 
+[2021-06-10 04:36:29] 1 BDCQ.SEA1AA | -1 | 80078 | (null) | F | Number | 0 | Business Data Collection - BDC | Industry by employment variable | Filled jobs | "Agriculture Forestry and Fishing" | Actual | (null) | (null) | 
+...
+[2021-06-10 04:36:29] Total of 1 queries were executed, client is terminating.
+\end{textcode}
+
+Client-4;
+
+\begin{textcode}
+[2021-06-10 04:36:44] Client-4 connecting 127.0.0.1:8082
+[2021-06-10 04:36:44] Client-4 connected and sending query: 'SELECT DISTINCT Series_reference,Series_title_5 FROM TABLE;'
+[2021-06-10 04:36:44] Server's response to Client-4 is 8 records, and arrived in 0.500938 seconds
+[2021-06-10 04:36:44] 0 Series_reference | Series_title_5 | 
+[2021-06-10 04:36:44] 1 BDCQ.SEA1AA | (null) | 
+[2021-06-10 04:36:44] 2 BDCQ.SEA1AA | ney | 
+[2021-06-10 04:36:44] 3 (null) | (null) | 
+[2021-06-10 04:36:44] 4 BDCQ.SEA1BA | (null) | 
+[2021-06-10 04:36:44] 5 BDCQ.SEA1CA | (null) | 
+[2021-06-10 04:36:44] 6 BDCQ.SEA1DA | (null) | 
+[2021-06-10 04:36:44] 7 BDCQ.SEA1EA | (null) | 
+[2021-06-10 04:36:44] 8 BDCQ.SEA1FA | (null) | 
+[2021-06-10 04:36:44] Total of 1 queries were executed, client is terminating.
+\end{textcode}
+\end{document}
