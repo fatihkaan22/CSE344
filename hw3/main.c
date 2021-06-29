@@ -36,6 +36,7 @@ struct file {
   int fd;
 };
 
+
 void usage(char *argv0) {
   printf(
       "Usage: %s -b haspatatoornot -s nameofsharedmemory -f filewithfifonames\n"
@@ -328,9 +329,9 @@ int main(int argc, char **argv) {
 #endif
     struct shared_memory m;
     if (sem_init(&m.all_fifos_created, 1, 0) == -1) {
-			perror("sem_init");
-			exit(EXIT_FAILURE);
-		}
+      perror("sem_init");
+      exit(EXIT_FAILURE);
+    }
     m.no_created_fifos = 0;
     m.no_potatos = 0;
     memcpy(addr, &m, sizeof(struct shared_memory));
